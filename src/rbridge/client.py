@@ -339,9 +339,24 @@ class Client:
         self.close()
 
 
+def socket_path(env: Optional[Dict[str, str]] = None) -> str:
+    """The running daemon's socket. daemon.json records it, because the daemon
+    moves the socket to a short temp path when the runtime directory is too
+    deep for a Unix socket."""
+    d = runtime_dir(env)
+    try:
+        with open(os.path.join(d, "daemon.json"), encoding="utf-8") as f:
+            sock = json.load(f).get("socket")
+        if sock:
+            return sock
+    except (OSError, ValueError):
+        pass
+    return os.path.join(d, "bridge.sock")
+
+
 def connect(socket_path: Optional[str] = None, client: str = "default", env: Optional[Dict[str, str]] = None) -> Client:
     """Connects to the daemon over its Unix socket."""
-    path = socket_path or os.path.join(runtime_dir(env), "bridge.sock")
+    path = socket_path or _socket_path(env)
     t = _IPC(path)
     t.call("initialize", {"client": client, "protocol_version": PROTOCOL_VERSION})
     return Client(t)
@@ -361,3 +376,6 @@ def connect_http(url: Optional[str] = None, token: Optional[str] = None, client:
             with open(os.path.join(d, "daemon.token"), encoding="utf-8") as f:
                 token = f.read().strip()
     return Client(_HTTP(url, token, client))
+
+
+_socket_path = socket_path
