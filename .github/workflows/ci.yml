@@ -1,0 +1,37 @@
+name: ci
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+
+permissions:
+  contents: read
+
+jobs:
+  test:
+    strategy:
+      matrix:
+        os: [ubuntu-latest, macos-latest]
+        python: ["3.9", "3.13"]
+    runs-on: ${{ matrix.os }}
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          path: rbridge-sdk-python
+      - uses: actions/checkout@v4
+        with:
+          repository: rbridge/rbridge
+          path: rbridge
+      - uses: actions/setup-go@v5
+        with:
+          go-version-file: rbridge/go.mod
+      - uses: actions/setup-python@v5
+        with:
+          python-version: ${{ matrix.python }}
+      - run: make build fakeagent
+        working-directory: rbridge
+      - run: python -m unittest discover -s tests
+        working-directory: rbridge-sdk-python
+        env:
+          PYTHONPATH: src
