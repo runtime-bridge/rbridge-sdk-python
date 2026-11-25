@@ -182,6 +182,9 @@ class _HTTP:
         routes = {
             "providers.list": ("GET", "/v1/providers" + ("?refresh=true" if p.get("refresh") else ""), None),
             "skills.list": ("GET", "/v1/skills", None),
+            "skills.add": ("POST", "/v1/skills", p),
+            "skills.trust": ("PUT", f"/v1/skills/{sid}/trust", {"trust": p.get("trust")}),
+            "skills.search": ("GET", "/v1/skills/search?q=" + urllib.parse.quote(str(p.get("query", ""))), None),
             "sessions.list": ("GET", "/v1/sessions", None),
             "sessions.get": ("GET", f"/v1/sessions/{sid}", None),
             "sessions.open": ("POST", "/v1/sessions", p),
@@ -297,6 +300,24 @@ class Client:
 
     def skills(self) -> List[Dict[str, Any]]:
         return self._t.call("skills.list")
+
+    def add_skill(self, path: str, link: bool = False) -> Dict[str, Any]:
+        """Adds a skill folder (an absolute path on this machine) to rbridge's
+        library. New skills start unreviewed."""
+        return self._t.call("skills.add", {"path": os.path.abspath(path), "link": link})
+
+    def add_catalog_skill(self, ref: str) -> Dict[str, Any]:
+        """Installs "catalog:id" or "id" from a configured skill catalog."""
+        return self._t.call("skills.add", {"catalog": ref})
+
+    def set_skill_trust(self, skill_id: str, trust: str) -> Dict[str, Any]:
+        """Sets unreviewed, reviewed, trusted, restricted or blocked. Mark a
+        skill reviewed only after reading it, or when your application ships it."""
+        return self._t.call("skills.trust", {"id": skill_id, "trust": trust})
+
+    def search_skills(self, query: str = "") -> Dict[str, Any]:
+        """Searches the configured skill catalogs."""
+        return self._t.call("skills.search", {"query": query})
 
     def sessions(self) -> List[Dict[str, Any]]:
         return self._t.call("sessions.list")

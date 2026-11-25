@@ -34,6 +34,8 @@ with rbridge.connect(client="my-app") as rb:
 | `run(task, on_event=, approver=, model=)` | New session, one turn, close |
 | `open(task, ...)` / `resume(id, ...)` | `Session` with `prompt()`, `cancel()`, `close()`; usable with `with` |
 | `providers()`, `skills()`, `sessions()`, `status()` | Read the daemon's state |
+| `add_skill(path)`, `set_skill_trust(id, trust)` | Add a skill your application ships and mark it reviewed |
+| `search_skills(query)`, `add_catalog_skill(ref)` | Use configured skill catalogs |
 
 `on_event` runs on a background thread for every event. `approver` answers permission requests the policy profile leaves to the caller; return `True`, `False` or `{"allow": ..., "option_id": ..., "remember": ...}`, where `remember` allows the same kind of request for the rest of the session. Without an approver such requests are denied. Errors are `rbridge.RbridgeError` with rbridge's stable `code`.
 

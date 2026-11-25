@@ -179,6 +179,27 @@ class ExtensionsTest(unittest.TestCase):
             d.stop()
 
 
+class SkillsTest(unittest.TestCase):
+    def test_add_and_trust(self):
+        d = Daemon("echo")
+        try:
+            skill = os.path.join(d.home, "src", "py-style")
+            os.makedirs(skill)
+            with open(os.path.join(skill, "SKILL.md"), "w") as f:
+                f.write("---\nname: py-style\ndescription: Python style rules.\n---\nbody\n")
+            for c in (rbridge.connect(env=d.env), rbridge.connect_http(env=d.env)):
+                with c:
+                    added = c.add_skill(skill)
+                    self.assertEqual(added["record"]["id"], "py-style")
+                    self.assertEqual(c.set_skill_trust("py-style", "reviewed")["trust"], "reviewed")
+                    self.assertIn("py-style", [s["id"] for s in c.skills()])
+                    with self.assertRaises(rbridge.RbridgeError) as cm:
+                        c.search_skills("x")
+                    self.assertEqual(cm.exception.code, "invalid_input")
+        finally:
+            d.stop()
+
+
 class RuntimeDirTest(unittest.TestCase):
     def test_rules(self):
         self.assertEqual(rbridge.runtime_dir({"RBRIDGE_HOME": "/r"}), os.path.join("/r", "run"))
