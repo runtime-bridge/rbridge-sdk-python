@@ -69,8 +69,13 @@ class SimpleTest(unittest.TestCase):
         os.makedirs(skill)
         with open(os.path.join(skill, "SKILL.md"), "w") as f:
             f.write("---\nname: tone\ndescription: Keep a calm tone.\n---\nBe calm.\n")
-        with self.rb() as rb:
-            self.assertEqual(rb.run("x", skills=[skill]).raw["skills"][0]["skill_id"], "tone")
+        with self.rb(runtime="fake") as rb:
+            # The fake runtime cannot load skills, so the run is refused, but
+            # only after the folder was added and trusted.
+            with self.assertRaises(rbridge.RbridgeError) as cm:
+                rb.run("x", skills=[skill])
+            self.assertEqual(cm.exception.code, "capability_unavailable")
+            self.assertIn(("tone", "reviewed"), [(s["id"], s["trust"]) for s in rb.client.skills()])
             self.assertEqual(rb.add_skills(os.path.dirname(skill)), ["tone"])
 
     def test_budget_stops_new_runs(self):
