@@ -49,5 +49,19 @@ class ProjectDirTest(unittest.TestCase):
             self.assertEqual(bundle.find_binary({"PATH": ""}), "/bundled/rbridge")
 
 
+
+class TaskTest(unittest.TestCase):
+    def test_conveniences(self):
+        from rbridge.client import _task
+
+        cwd = os.getcwd()
+        self.assertEqual(_task("hi"), {"prompt": "hi", "workspace": cwd})
+        self.assertEqual(_task({"prompt": "hi", "workspace": "sub"})["workspace"], os.path.join(cwd, "sub"))
+        self.assertEqual(_task({"prompt": "hi", "workspace": "/abs"})["workspace"], "/abs")
+        original = {"prompt": "hi"}
+        _task(original)
+        self.assertNotIn("workspace", original, "the caller's dict must not change")
+
+
 if __name__ == "__main__":
     unittest.main()

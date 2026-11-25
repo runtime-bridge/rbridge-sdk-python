@@ -33,7 +33,7 @@ Until the packages are published, install from Git (the client only; rbridge on 
 ```python
 import rbridge
 
-with rbridge.connect(client="my-app", start=True) as rb:
+with rbridge.connect(client="my-app") as rb:
     result = rb.run(
         {"workspace": "/home/me/project", "prompt": "Review this project for security issues", "skills": ["security-audit"]},
         on_event=lambda e: e["type"] == "message.delta" and print(e["data"]["text"], end=""),
@@ -42,7 +42,7 @@ with rbridge.connect(client="my-app", start=True) as rb:
     print(result["output"])
 ```
 
-`start=True` starts the daemon when it is not running, using the bundled rbridge (or `RBRIDGE_BIN`, or rbridge on `PATH`); without it, start the daemon yourself with `rbridge daemon start`. `connect()` uses the daemon's Unix socket, found the same way rbridge finds it (`RBRIDGE_HOME`, XDG and OS defaults); pass `socket_path` to override. `connect_http()` uses the local HTTP API instead and reads the URL and token from the daemon's runtime directory; the daemon must have `daemon.http.enabled: true`.
+`connect()` starts a daemon when none is running, using the bundled rbridge (or `RBRIDGE_BIN`, or rbridge on `PATH`); a daemon started this way stops by itself after 30 idle minutes. Pass `start=False` to only connect to one already running. Tasks can be a plain prompt (`rb.run("Summarise README.md")`), and the workspace defaults to the current folder. `connect()` uses the daemon's Unix socket, found the same way rbridge finds it (`RBRIDGE_HOME`, XDG and OS defaults); pass `socket_path` to override. `connect_http()` uses the local HTTP API instead and reads the URL and token from the daemon's runtime directory; the daemon must have `daemon.http.enabled: true`.
 
 | Call | What it does |
 |---|---|

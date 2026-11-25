@@ -43,6 +43,15 @@ def _prompt(p: Prompt) -> List[Dict[str, Any]]:
     return text(p) if isinstance(p, str) else p
 
 
+def _task(task: Union[str, Dict[str, Any]]) -> Dict[str, Any]:
+    """A task with the conveniences filled in: a plain string is the prompt,
+    the workspace defaults to the current folder, and a relative workspace is
+    made absolute (the daemon runs elsewhere and needs a full path)."""
+    t = {"prompt": task} if isinstance(task, str) else dict(task)
+    t["workspace"] = os.path.abspath(t.get("workspace") or os.getcwd())
+    return t
+
+
 def runtime_dir(env: Optional[Dict[str, str]] = None) -> str:
     """The daemon's runtime directory, following rbridge's own rules."""
     env = os.environ if env is None else env
@@ -346,12 +355,13 @@ class Client:
     def status(self) -> Dict[str, Any]:
         return self._t.call("daemon.status")
 
-    def open(self, task: Dict[str, Any], on_event: Optional[Callable[[Event], None]] = None,
+    def open(self, task: Union[str, Dict[str, Any]], on_event: Optional[Callable[[Event], None]] = None,
              approver: Optional[Approver] = None, model: Optional[str] = None,
              mode: Optional[str] = None, on_input: Optional[InputHandler] = None) -> Session:
         """Opens a session. Approval requests go to approver; without one they are denied.
-        Questions the runtime asks go to on_input; without one they are declined."""
-        t = dict(task)
+        Questions the runtime asks go to on_input; without one they are declined.
+        The workspace defaults to the current folder."""
+        t = _task(task)
         if "prompt" in t:
             t["prompt"] = _prompt(t["prompt"])
         record = self._t.call("sessions.open", {"task": t, "model": model, "mode": mode, "input": on_input is not None})
@@ -407,12 +417,14 @@ class Client:
         except RbridgeError:
             pass
 
-    def run(self, task: Dict[str, Any], on_event: Optional[Callable[[Event], None]] = None,
+    def run(self, task: Union[str, Dict[str, Any]], on_event: Optional[Callable[[Event], None]] = None,
             approver: Optional[Approver] = None, model: Optional[str] = None,
             mode: Optional[str] = None, on_input: Optional[InputHandler] = None) -> Dict[str, Any]:
-        """Runs a task in a new session and closes it."""
-        with self.open(task, on_event=on_event, approver=approver, model=model, mode=mode, on_input=on_input) as s:
-            return s.prompt(task["prompt"])
+        """Runs a task in a new session and closes it. task may be just the
+        prompt; the workspace defaults to the current folder."""
+        t = _task(task)
+        with self.open(t, on_event=on_event, approver=approver, model=model, mode=mode, on_input=on_input) as s:
+            return s.prompt(t["prompt"])
 
     def close(self) -> None:
         self._t.close()
@@ -440,13 +452,14 @@ def socket_path(env: Optional[Dict[str, str]] = None) -> str:
 
 
 def connect(socket_path: Optional[str] = None, client: str = "default", env: Optional[Dict[str, str]] = None,
-            start: bool = False) -> Client:
+            start: bool = True) -> Client:
     """Connects to the daemon over its Unix socket.
 
     With rbridge bundled in this package and RBRIDGE_HOME unset, the daemon is
-    this project's (its data in the project's .rbridge folder). With start set,
-    a daemon that is not running is started first, using the bundled rbridge,
-    RBRIDGE_BIN or rbridge on PATH."""
+    this project's (its data in the project's .rbridge folder). A daemon that
+    is not running is started first, using the bundled rbridge, RBRIDGE_BIN or
+    rbridge on PATH; it stops by itself after 30 idle minutes. Pass
+    start=False to only connect to one that is already running."""
     from .bundle import effective_env, start_daemon
 
     env = effective_env(env)

@@ -90,16 +90,24 @@ def effective_env(env: Optional[Mapping[str, str]] = None) -> Dict[str, str]:
     return out
 
 
-def start_daemon(env: Optional[Mapping[str, str]] = None) -> None:
-    """Starts the daemon for this environment's rbridge home, if none is running."""
+#: How long a daemon the SDK starts itself keeps running with nothing to do.
+AUTO_DAEMON_IDLE = "30m"
+
+
+def start_daemon(env: Optional[Mapping[str, str]] = None, exit_when_idle: Optional[str] = AUTO_DAEMON_IDLE) -> None:
+    """Starts the daemon for this environment's rbridge home, if none is
+    running. It stops by itself after exit_when_idle with no session and no
+    client (None keeps it running until rbridge daemon stop)."""
     from .client import RbridgeError
 
     env = effective_env(env)
     binary = find_binary(env)
     if not binary:
         raise RbridgeError("provider_unavailable",
-                           "rbridge is not installed: install a platform build of this package, or rbridge itself "
-                           "(https://github.com/runtime-bridge/rbridge), or set RBRIDGE_BIN")
-    run = subprocess.run([binary, "daemon", "start"], env=env, capture_output=True, text=True, timeout=60)
+                           "no rbridge daemon is running and rbridge is not installed. Install it with the SDK "
+                           "(pip install rbridge, on Linux, macOS or Windows) or on its own "
+                           "(https://github.com/runtime-bridge/rbridge#install), or set RBRIDGE_BIN to its path")
+    args = [binary, "daemon", "start"] + (["--exit-when-idle", exit_when_idle] if exit_when_idle else [])
+    run = subprocess.run(args, env=env, capture_output=True, text=True, timeout=60)
     if run.returncode != 0 and "already running" not in (run.stdout + run.stderr):
         raise RbridgeError("provider_unavailable", f"could not start the rbridge daemon: {(run.stderr or run.stdout).strip()}")
