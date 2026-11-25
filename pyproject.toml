@@ -12,7 +12,7 @@ license = { text = "Apache-2.0" }
 dependencies = []
 
 [project.urls]
-Source = "https://github.com/rbridge/rbridge-sdk-python"
+Source = "https://github.com/runtime-bridge/rbridge-sdk-python"
 
 [tool.setuptools.packages.find]
 where = ["src"]

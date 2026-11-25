@@ -308,18 +308,18 @@ class Client:
         return session
 
     def _answer(self, session_id: str, request: Dict[str, Any], approver: Optional[Approver]) -> None:
-        allow, option_id = False, None
+        allow, option_id, remember = False, None, False
         if approver is not None:
             try:
                 d = approver(request)
                 if isinstance(d, dict):
-                    allow, option_id = bool(d.get("allow")), d.get("option_id")
+                    allow, option_id, remember = bool(d.get("allow")), d.get("option_id"), bool(d.get("remember"))
                 else:
                     allow = d is True
             except Exception:
                 allow = False
         try:
-            self._t.call("approvals.answer", {"session_id": session_id, "approval_id": request.get("id"), "allow": allow, "option_id": option_id})
+            self._t.call("approvals.answer", {"session_id": session_id, "approval_id": request.get("id"), "allow": allow, "option_id": option_id, "remember": remember})
         except RbridgeError:
             pass
 

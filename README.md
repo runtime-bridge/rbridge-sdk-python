@@ -1,6 +1,6 @@
 # rbridge for Python
 
-Python client for the [rbridge](https://github.com/rbridge/rbridge) daemon. It lets a Python program hand tasks to the agent runtimes installed on the machine (Claude Code, OpenCode, any ACP agent) through one interface, with skills, approvals and streamed events.
+Python client for the [rbridge](https://github.com/runtime-bridge/rbridge) daemon. It lets a Python program hand tasks to the agent runtimes installed on the machine (Claude Code, OpenCode, any ACP agent) through one interface, with skills, approvals and streamed events.
 
 Standard library only. Python 3.9 or later.
 
@@ -28,7 +28,7 @@ with rbridge.connect(client="my-app") as rb:
 | `open(task, ...)` / `resume(id, ...)` | `Session` with `prompt()`, `cancel()`, `close()`; usable with `with` |
 | `providers()`, `skills()`, `sessions()`, `status()` | Read the daemon's state |
 
-`on_event` runs on a background thread for every event. `approver` answers permission requests the policy profile leaves to the caller; return `True`, `False` or `{"allow": ..., "option_id": ...}`. Without an approver such requests are denied. Errors are `rbridge.RbridgeError` with rbridge's stable `code`.
+`on_event` runs on a background thread for every event. `approver` answers permission requests the policy profile leaves to the caller; return `True`, `False` or `{"allow": ..., "option_id": ..., "remember": ...}`, where `remember` allows the same kind of request for the rest of the session. Without an approver such requests are denied. Errors are `rbridge.RbridgeError` with rbridge's stable `code`.
 
 Sessions are visible only to the `client` name that opened them.
 

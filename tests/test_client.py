@@ -137,6 +137,12 @@ class ApprovalTest(unittest.TestCase):
                 os.remove(os.path.join(d.workspace, "notes.txt"))
                 res = c.run({"workspace": d.workspace, "prompt": "write", "profile": "controlled"})
                 self.assertEqual(res["output"], "denied")
+                calls = []
+                with c.open({"workspace": d.workspace, "profile": "controlled"},
+                            approver=lambda req: calls.append(1) or {"allow": True, "remember": True}) as s:
+                    self.assertEqual(s.prompt("write")["output"], "allowed")
+                    self.assertEqual(s.prompt("write")["output"], "allowed")
+                self.assertEqual(len(calls), 1)
         finally:
             d.stop()
 
