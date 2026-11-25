@@ -105,7 +105,7 @@ Every option can be set on `Rbridge(...)` as a default and overridden on any cal
 | `stream` | `True` prints answers as they are written; a function receives the chunks instead |
 | `chat` | `True` makes every `run` continue one conversation |
 
-A `Response` has `text`, `data` (with a schema), `runtime`, `session_id`, `stop_reason`, `usage` and `raw`. The `Stream` from `rb.stream()` yields text; afterwards `stream.response` is the `Response` and `stream.events` every event (tools, plans, usage). Pass `on_event=` to `run` to see events as they happen. Errors are `rbridge.RbridgeError` with a stable `code`.
+A `Response` has `text`, `data` (with a schema), `runtime`, `session_id`, `stop_reason`, `usage` and `raw`. The `Stream` from `rb.stream()` yields text; afterwards `stream.response` is the `Response` and `stream.events` every event (tools, plans, usage). Pass `on_event=` to `run` to see events as they happen. Errors are `rbridge.RbridgeError` with a stable `code` (the list is at https://runtime-bridge.github.io/docs/errors/); `budget_exceeded` means `max_cost_usd` is spent.
 
 ## Lower-level API
 
