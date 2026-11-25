@@ -9,7 +9,7 @@
 
 Python client for the [rbridge](https://github.com/runtime-bridge/rbridge) daemon. It lets a Python program hand tasks to the agent runtimes installed on the machine (Claude Code, OpenCode, any ACP agent) through one interface, with skills, approvals and streamed events.
 
-Standard library only. Python 3.9 or later.
+Standard library only. Python 3.10 or later.
 
 ## Use
 
