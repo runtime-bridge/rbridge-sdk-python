@@ -10,7 +10,7 @@ import threading
 import urllib.error
 import urllib.parse
 import urllib.request
-from typing import Any, Callable, Dict, List, Optional, Union
+from typing import Any, Callable, Dict, List, Optional, Sequence, Union
 
 PROTOCOL_VERSION = 1
 
@@ -183,6 +183,7 @@ class _HTTP:
             "providers.list": ("GET", "/v1/providers" + ("?refresh=true" if p.get("refresh") else ""), None),
             "skills.list": ("GET", "/v1/skills", None),
             "skills.add": ("POST", "/v1/skills", p),
+            "skills.add_many": ("POST", "/v1/skills/batch", p),
             "skills.trust": ("PUT", f"/v1/skills/{sid}/trust", {"trust": p.get("trust")}),
             "skills.search": ("GET", "/v1/skills/search?q=" + urllib.parse.quote(str(p.get("query", ""))), None),
             "sessions.list": ("GET", "/v1/sessions", None),
@@ -305,6 +306,26 @@ class Client:
         """Adds a skill folder (an absolute path on this machine) to rbridge's
         library. New skills start unreviewed."""
         return self._t.call("skills.add", {"path": os.path.abspath(path), "link": link})
+
+    def add_skills(self, source: Union[str, Sequence[str]], *, only: Optional[Sequence[str]] = None,
+                   exclude: Optional[Sequence[str]] = None, trust: Optional[str] = None,
+                   dry_run: bool = False, link: bool = False, rev: Optional[str] = None,
+                   subdirs: Optional[Sequence[str]] = None) -> Dict[str, Any]:
+        """Adds every skill found in one or more folders (each a skill, or a
+        folder holding skills), or in a Git repository when source is a URL.
+
+        only and exclude take names or patterns such as "metric-*"; trust is
+        set on every skill added; dry_run finds and checks without installing.
+        One skill failing does not stop the others: each item in the result has
+        a status (added, updated, unchanged, would_add, skipped or failed)."""
+        sources = [source] if isinstance(source, str) else list(source)
+        params: Dict[str, Any] = {"only": list(only or []), "exclude": list(exclude or []),
+                                  "trust": trust or "", "dry_run": dry_run, "link": link}
+        if len(sources) == 1 and ("://" in sources[0] or sources[0].startswith("git@")):
+            params.update(url=sources[0], rev=rev or "", subdirs=list(subdirs or []))
+        else:
+            params["paths"] = [os.path.abspath(s) for s in sources]
+        return self._t.call("skills.add_many", params)
 
     def add_catalog_skill(self, ref: str) -> Dict[str, Any]:
         """Installs "catalog:id" or "id" from a configured skill catalog."""

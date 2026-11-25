@@ -196,6 +196,12 @@ class SkillsTest(unittest.TestCase):
                     with self.assertRaises(rbridge.RbridgeError) as cm:
                         c.search_skills("x")
                     self.assertEqual(cm.exception.code, "invalid_input")
+                    many = c.add_skills(os.path.dirname(skill), only=["py-*"], trust="trusted")
+                    self.assertEqual([(i["id"], i["status"]) for i in many["items"]], [("py-style", "unchanged")])
+                    self.assertEqual(many["items"][0]["result"]["record"]["trust"], "trusted")
+                    with self.assertRaises(rbridge.RbridgeError) as cm:
+                        c.add_skills(os.path.dirname(skill), only=["nosuch"])
+                    self.assertEqual(cm.exception.code, "skill_not_found")
         finally:
             d.stop()
 
