@@ -1,0 +1,55 @@
+name: release
+
+# Publishes the wheels to PyPI when a v* tag is pushed. RBRIDGE_VERSION names
+# the rbridge release the wheels carry. Publishing uses PyPI trusted
+# publishing: add this repository and workflow as a trusted publisher of the
+# rbridge project on PyPI first.
+
+on:
+  push:
+    tags: ["v*"]
+
+permissions:
+  contents: read
+
+jobs:
+  build:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          path: rbridge-sdk-python
+      - id: rbridge
+        run: echo "ref=$(cat rbridge-sdk-python/RBRIDGE_VERSION)" >> "$GITHUB_OUTPUT"
+      - uses: actions/checkout@v4
+        with:
+          repository: runtime-bridge/rbridge
+          ref: ${{ steps.rbridge.outputs.ref }}
+          path: rbridge
+      - uses: actions/setup-go@v5
+        with:
+          go-version-file: rbridge/go.mod
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.13"
+      - run: make cross VERSION=${{ steps.rbridge.outputs.ref }}
+        working-directory: rbridge
+      - run: python scripts/build_wheels.py --binaries ../rbridge/bin
+        working-directory: rbridge-sdk-python
+      - uses: actions/upload-artifact@v4
+        with:
+          name: wheels
+          path: rbridge-sdk-python/dist/*.whl
+
+  publish:
+    needs: build
+    runs-on: ubuntu-latest
+    environment: pypi
+    permissions:
+      id-token: write
+    steps:
+      - uses: actions/download-artifact@v4
+        with:
+          name: wheels
+          path: dist
+      - uses: pypa/gh-action-pypi-publish@release/v1

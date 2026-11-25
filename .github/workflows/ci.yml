@@ -35,3 +35,36 @@ jobs:
         working-directory: rbridge-sdk-python
         env:
           PYTHONPATH: src
+
+  package:
+    strategy:
+      matrix:
+        os: [ubuntu-latest, macos-latest]
+    runs-on: ${{ matrix.os }}
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          path: rbridge-sdk-python
+      - uses: actions/checkout@v4
+        with:
+          repository: runtime-bridge/rbridge
+          path: rbridge
+      - uses: actions/setup-go@v5
+        with:
+          go-version-file: rbridge/go.mod
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.13"
+      - run: make cross
+        working-directory: rbridge
+      - run: python scripts/build_wheels.py --binaries ../rbridge/bin
+        working-directory: rbridge-sdk-python
+      - name: Install into a fresh project and use the bundled rbridge
+        run: |
+          mkdir app && cd app
+          python -m venv .venv
+          .venv/bin/pip install --no-index --find-links ../rbridge-sdk-python/dist rbridge
+          .venv/bin/rbridge version
+          .venv/bin/rbridge init
+          test -f .rbridge/config/config.yaml
+          .venv/bin/python -c "import rbridge; assert rbridge.bundled_binary(); print(rbridge.project_home())"
