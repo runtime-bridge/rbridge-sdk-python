@@ -439,8 +439,25 @@ def socket_path(env: Optional[Dict[str, str]] = None) -> str:
     return os.path.join(d, "bridge.sock")
 
 
-def connect(socket_path: Optional[str] = None, client: str = "default", env: Optional[Dict[str, str]] = None) -> Client:
-    """Connects to the daemon over its Unix socket."""
+def connect(socket_path: Optional[str] = None, client: str = "default", env: Optional[Dict[str, str]] = None,
+            start: bool = False) -> Client:
+    """Connects to the daemon over its Unix socket.
+
+    With rbridge bundled in this package and RBRIDGE_HOME unset, the daemon is
+    this project's (its data in the project's .rbridge folder). With start set,
+    a daemon that is not running is started first, using the bundled rbridge,
+    RBRIDGE_BIN or rbridge on PATH."""
+    from .bundle import effective_env, start_daemon
+
+    env = effective_env(env)
+    if start and not socket_path:
+        probe = socket.socket(socket.AF_UNIX, socket.SOCK_STREAM)
+        try:
+            probe.connect(_socket_path(env))
+        except OSError:
+            start_daemon(env)
+        finally:
+            probe.close()
     path = socket_path or _socket_path(env)
     t = _IPC(path)
     t.call("initialize", {"client": client, "protocol_version": PROTOCOL_VERSION})
@@ -450,6 +467,9 @@ def connect(socket_path: Optional[str] = None, client: str = "default", env: Opt
 def connect_http(url: Optional[str] = None, token: Optional[str] = None, client: str = "default",
                  env: Optional[Dict[str, str]] = None) -> Client:
     """Connects over local HTTP. URL and token default to the running daemon's."""
+    from .bundle import effective_env
+
+    env = effective_env(env)
     if not url or not token:
         d = runtime_dir(env)
         with open(os.path.join(d, "daemon.json"), encoding="utf-8") as f:
