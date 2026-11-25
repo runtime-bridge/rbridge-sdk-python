@@ -1,6 +1,12 @@
-"""Use the agent runtimes installed on this machine through the rbridge daemon."""
+"""Use the agent runtimes installed on this machine through the rbridge daemon.
+
+    from rbridge import Rbridge
+    rb = Rbridge(runtime="claude-code")
+    print(rb.run("Summarise README.md").text)
+"""
 
 from .bundle import bundled_binary, find_binary, project_home, start_daemon
+from .simple import AsyncChat, AsyncRbridge, AsyncStream, Chat, Rbridge, Response, Stream, Usage
 from .client import (
     PROTOCOL_VERSION,
     Client,
@@ -13,6 +19,7 @@ from .client import (
     text,
 )
 
-__all__ = ["PROTOCOL_VERSION", "Client", "RbridgeError", "Session", "bundled_binary", "connect", "connect_http",
+__all__ = ["AsyncChat", "AsyncRbridge", "AsyncStream", "Chat", "Rbridge", "Response", "Stream", "Usage",
+           "PROTOCOL_VERSION", "Client", "RbridgeError", "Session", "bundled_binary", "connect", "connect_http",
            "find_binary", "project_home", "runtime_dir", "socket_path", "start_daemon", "text"]
 __version__ = "0.1.0"
