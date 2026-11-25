@@ -1,4 +1,6 @@
 import asyncio
+import contextlib
+import io
 import os
 import unittest
 
@@ -26,20 +28,45 @@ class SimpleTest(unittest.TestCase):
             self.assertEqual((r.text, str(r), r.runtime, r.stop_reason), ("echo: hello", "echo: hello", "fake", "end_turn"))
             self.assertTrue(r.session_id.startswith("ses_"))
 
-    def test_stream_is_one_argument(self):
+    def test_stream_true_prints_and_returns_the_answer(self):
+        out = io.StringIO()
+        with self.rb() as rb, contextlib.redirect_stdout(out):
+            r = rb.run("streamed", stream=True)
+        self.assertEqual((out.getvalue(), r.text), ("echo: streamed\n", "echo: streamed"))
+        chunks = []
+        with self.rb(stream=chunks.append) as rb:
+            self.assertEqual(rb.run("to a function").text, "echo: to a function")
+        self.assertEqual("".join(chunks), "echo: to a function")
+
+    def test_stream_method_is_the_iterator(self):
         with self.rb() as rb:
-            s = rb.run("streamed", stream=True)
+            s = rb.stream("streamed")
             self.assertEqual("".join(s), "echo: streamed")
             self.assertEqual(s.response.text, "echo: streamed")
             self.assertIn("message.delta", [e["type"] for e in s.events])
-            self.assertEqual(rb.run("again", stream=True).text(), "echo: again")
+            self.assertEqual(rb.stream("again").text(), "echo: again")
+
+    def test_everything_set_once(self):
+        out = io.StringIO()
+        with self.rb(chat=True, stream=True) as rb, contextlib.redirect_stdout(out):
+            first = rb.run("one")
+            rest = rb.run(["two", "three"])
+            self.assertEqual([r.session_id for r in rest], [first.session_id] * 2)
+            rb.reset()
+            self.assertNotEqual(rb.run("four").session_id, first.session_id)
+        self.assertEqual(out.getvalue(), "echo: one\necho: two\necho: three\necho: four\n")
+        with self.rb() as rb:
+            with self.assertRaises(TypeError):
+                rb.run(["a", "b"])
+            self.assertEqual([r.text for r in rb.run(["a", "b"], chat=True)], ["echo: a", "echo: b"])
 
     def test_chat_keeps_one_session(self):
         with self.rb() as rb, rb.chat() as chat:
             first, second = chat.send("one"), chat.send("two")
             self.assertEqual((first.text, second.text), ("echo: one", "echo: two"))
             self.assertEqual(first.session_id, second.session_id)
-            self.assertEqual("".join(chat.send("three", stream=True)), "echo: three")
+            self.assertEqual("".join(chat.stream("three")), "echo: three")
+            self.assertEqual([r.text for r in chat.send(["four", "five"])], ["echo: four", "echo: five"])
 
     def test_run_many_keeps_order(self):
         with self.rb() as rb:
@@ -88,8 +115,11 @@ class SimpleTest(unittest.TestCase):
         async def main():
             rb = AsyncRbridge(workspace=self.d.workspace, env=self.d.env)
             a, b = await asyncio.gather(rb.run("a"), rb.run("b"))
-            s = await rb.run("s", stream=True)
+            s = await rb.stream("s")
             chunks = [c async for c in s]
+            got = []
+            await rb.run("cb", stream=got.append)
+            assert "".join(got) == "echo: cb"
             chat = rb.chat()
             one = await chat.send("one")
             two = await chat.send("two")

@@ -5,12 +5,12 @@
     rb = Rbridge(runtime="claude-code")
     print(rb.run("Summarise README.md").text)
 
-    for chunk in rb.run("Explain app.py", stream=True):
-        print(chunk, end="")
+    rb.run("Explain app.py", stream=True)          # printed as it is written
 
-    chat = rb.chat()
-    chat.send("What does app.py do?")
-    chat.send("Now write tests for it")
+    rb = Rbridge(runtime="claude-code", chat=True, stream=True)
+    rb.run("What does app.py do?")                 # one conversation,
+    rb.run("Now write tests for it")               # streamed, remembered
+    rb.run(["Summarise it", "Shorter"])            # several messages, one call
 
     answers = rb.run_many(["Review a.py", "Review b.py"])
 
@@ -25,6 +25,7 @@ import asyncio
 import json
 import os
 import queue
+import sys
 import threading
 from concurrent.futures import ThreadPoolExecutor
 from dataclasses import dataclass, field
@@ -33,6 +34,8 @@ from typing import Any, AsyncIterator, Callable, Dict, Iterator, List, Optional,
 from .client import Client, RbridgeError, Session, _task, connect
 
 Approve = Union[bool, str, Callable[[Dict[str, Any]], Any], None]
+#: stream=True prints to the terminal; a function receives each chunk instead.
+StreamTo = Union[bool, Callable[[str], Any], None]
 
 _DONE = object()
 
@@ -145,6 +148,27 @@ class Stream:
         return self.response.text if self.response else ""
 
 
+def _deliver(s: "Stream", stream: StreamTo) -> Response:
+    """Hands every chunk to the terminal (stream=True) or to the given
+    function, then returns the whole Response."""
+    if callable(stream):
+        for chunk in s:
+            stream(chunk)
+    else:
+        for chunk in s:
+            sys.stdout.write(chunk)
+            sys.stdout.flush()
+        if s.response and s.response.text and not s.response.text.endswith("\n"):
+            sys.stdout.write("\n")
+            sys.stdout.flush()
+    assert s.response is not None
+    return s.response
+
+
+def _messages(prompt: Any) -> bool:
+    return isinstance(prompt, (list, tuple)) and bool(prompt) and all(isinstance(p, str) for p in prompt)
+
+
 def _approver(approve: Approve) -> Optional[Callable[[Dict[str, Any]], Any]]:
     if approve is None or approve is False or approve == "deny":
         return None
@@ -169,14 +193,19 @@ class Rbridge:
     sandbox ("files" or "full"), timeout (seconds), max_concurrency for
     run_many, and max_cost_usd, after which no new run starts.
 
+    stream=True prints every answer as it is written (or pass a function to
+    receive the chunks); run still returns the whole Response. chat=True
+    makes every run continue one conversation; rb.reset() starts a new one.
+
     The daemon is found or started on first use (see rbridge.connect).
     """
 
     def __init__(self, runtime: Optional[str] = None, *, model: Optional[str] = None,
                  workspace: Optional[str] = None, skills: Sequence[str] = (), profile: Optional[str] = None,
                  approve: Approve = False, sandbox: Optional[str] = None, timeout: Optional[float] = None,
-                 max_concurrency: int = 4, max_cost_usd: Optional[float] = None, app: str = "default",
-                 client: Optional[Client] = None, env: Optional[Dict[str, str]] = None):
+                 max_concurrency: int = 4, max_cost_usd: Optional[float] = None, stream: StreamTo = False,
+                 chat: bool = False, app: str = "default", client: Optional[Client] = None,
+                 env: Optional[Dict[str, str]] = None):
         self.defaults: Dict[str, Any] = dict(runtime=runtime, model=model, workspace=workspace, skills=list(skills),
                                              profile=profile, approve=approve, sandbox=sandbox, timeout=timeout)
         self.max_concurrency = max_concurrency
@@ -186,6 +215,8 @@ class Rbridge:
         self._app, self._env, self._client = app, env, client
         self._lock = threading.Lock()
         self._skill_dirs: Dict[str, str] = {}
+        self.stream_to, self.chatting = stream, chat
+        self._conversation: Optional["Chat"] = None
 
     # ------------------------------------------------------------ plumbing
 
@@ -256,29 +287,73 @@ class Rbridge:
 
     # --------------------------------------------------------------- calls
 
-    def run(self, prompt: Any, *, stream: bool = False, schema: Optional[Dict[str, Any]] = None,
-            on_event: Optional[Callable[[Dict[str, Any]], None]] = None, **options: Any) -> Any:
-        """Runs one prompt in a new session and returns a Response, or with
-        stream=True a Stream to iterate. schema asks for JSON matching it,
-        parsed into Response.data. on_event sees every event as it happens."""
-        o = self._options({**options, "schema": schema})
+    def _stream(self, prompt: Any, o: Dict[str, Any], on_event: Optional[Callable[[Dict[str, Any]], None]]) -> "Stream":
         t = self._task(prompt, o)
+        holder: Dict[str, Session] = {}
+
+        def start(cb: Callable[[Dict[str, Any]], None]) -> Dict[str, Any]:
+            def both(ev: Dict[str, Any]) -> None:
+                cb(ev)
+                if on_event:
+                    on_event(ev)
+            holder["s"] = self._open(t, o, both)
+            raw = holder["s"].prompt(t["prompt"])
+            self._count(Response._from(raw))
+            return raw
+
+        return Stream(start, finish=lambda: holder["s"].close() if "s" in holder else None)
+
+    def _default_chat(self, options: Dict[str, Any]) -> "Chat":
+        with self._lock:
+            if self._conversation is None:
+                self._conversation = Chat(self, self._options(options))
+            return self._conversation
+
+    def run(self, prompt: Any, *, stream: StreamTo = None, chat: Optional[bool] = None,
+            schema: Optional[Dict[str, Any]] = None, on_event: Optional[Callable[[Dict[str, Any]], None]] = None,
+            **options: Any) -> Any:
+        """Runs a prompt and returns its Response.
+
+        stream=True prints the answer as it is written (a function receives
+        the chunks instead); the defaults come from Rbridge(stream=, chat=).
+        With chat, the prompt continues this object's conversation, and a
+        list of messages is sent in order, returning a list of Responses.
+        schema asks for JSON matching it, parsed into Response.data; on_event
+        sees every event as it happens."""
+        stream = self.stream_to if stream is None else stream
+        chat = self.chatting if chat is None else chat
+        if _messages(prompt):
+            if not chat:
+                raise TypeError("a list of messages is a conversation: pass chat=True, or use run_many for separate prompts")
+            return [self.run(p, stream=stream, chat=True, schema=schema, on_event=on_event, **options) for p in prompt]
+        if chat:
+            if schema is not None:
+                options["schema"] = schema
+            return self._default_chat(options).send(prompt, stream=stream)
+        o = self._options({**options, "schema": schema})
         if stream:
-            holder: Dict[str, Session] = {}
-
-            def start(cb: Callable[[Dict[str, Any]], None]) -> Dict[str, Any]:
-                def both(ev: Dict[str, Any]) -> None:
-                    cb(ev)
-                    if on_event:
-                        on_event(ev)
-                holder["s"] = self._open(t, o, both)
-                raw = holder["s"].prompt(t["prompt"])
-                self._count(Response._from(raw))
-                return raw
-
-            return Stream(start, finish=lambda: holder["s"].close() if "s" in holder else None)
+            return _deliver(self._stream(prompt, o, on_event), stream)
+        t = self._task(prompt, o)
         with self._open(t, o, on_event) as s:
             return self._count(Response._from(s.prompt(t["prompt"])))
+
+    def stream(self, prompt: Any, *, chat: Optional[bool] = None, schema: Optional[Dict[str, Any]] = None,
+               on_event: Optional[Callable[[Dict[str, Any]], None]] = None, **options: Any) -> "Stream":
+        """The answer as an iterator of text chunks, for when you want to
+        handle each chunk yourself (stream=True on run does it for you)."""
+        chat = self.chatting if chat is None else chat
+        if chat:
+            if schema is not None:
+                options["schema"] = schema
+            return self._default_chat(options).stream(prompt)
+        return self._stream(prompt, self._options({**options, "schema": schema}), on_event)
+
+    def reset(self) -> None:
+        """Ends the conversation that chat=True keeps; the next run starts a new one."""
+        with self._lock:
+            conv, self._conversation = self._conversation, None
+        if conv is not None:
+            conv.close()
 
     def run_many(self, prompts: Sequence[Any], *, return_exceptions: bool = False,
                  max_concurrency: Optional[int] = None, **options: Any) -> List[Any]:
@@ -288,6 +363,9 @@ class Rbridge:
         ({"prompt": ..., "runtime": ..., "workspace": ...}). rbridge still
         enforces its own limits on sessions. With return_exceptions, a failed
         run gives its exception in its place instead of raising."""
+        options.setdefault("chat", False)
+        options.setdefault("stream", False)
+
         def one(item: Any) -> Any:
             if isinstance(item, dict):
                 item = dict(item)
@@ -325,6 +403,7 @@ class Rbridge:
         return [i["id"] for i in items if i["status"] != "skipped"]
 
     def close(self) -> None:
+        self.reset()
         with self._lock:
             if self._client is not None:
                 self._client.close()
@@ -364,8 +443,7 @@ class Chat:
     def id(self) -> Optional[str]:
         return self._session.id if self._session else None
 
-    def send(self, prompt: Any, *, stream: bool = False) -> Any:
-        """Sends one message and returns the Response, or a Stream with stream=True."""
+    def _start(self, prompt: Any) -> Callable[[Optional[Callable[[Dict[str, Any]], None]]], Dict[str, Any]]:
         def start(sink: Optional[Callable[[Dict[str, Any]], None]]) -> Dict[str, Any]:
             with self._turn:
                 self._sink = sink
@@ -379,10 +457,23 @@ class Chat:
                     self._done |= self._seen
                 self._rb._count(Response._from(raw))
                 return raw
+        return start
 
+    def send(self, prompt: Any, *, stream: StreamTo = None) -> Any:
+        """Sends a message and returns the Response; a list of messages is
+        sent in order and returns a list. stream=True prints the answer as it
+        is written (a function receives the chunks instead); the default
+        comes from Rbridge(stream=)."""
+        stream = self._rb.stream_to if stream is None else stream
+        if _messages(prompt):
+            return [self.send(p, stream=stream) for p in prompt]
         if stream:
-            return Stream(start)
-        return Response._from(start(None))
+            return _deliver(self.stream(prompt), stream)
+        return Response._from(self._start(prompt)(None))
+
+    def stream(self, prompt: Any) -> "Stream":
+        """The answer as an iterator of text chunks."""
+        return Stream(self._start(prompt))
 
     def close(self) -> None:
         if self._session is not None:
@@ -433,10 +524,11 @@ class AsyncChat:
     def id(self) -> Optional[str]:
         return self._chat.id
 
-    async def send(self, prompt: Any, *, stream: bool = False) -> Any:
-        if stream:
-            return AsyncStream(self._chat.send(prompt, stream=True))
-        return await asyncio.to_thread(self._chat.send, prompt)
+    async def send(self, prompt: Any, *, stream: StreamTo = None) -> Any:
+        return await asyncio.to_thread(self._chat.send, prompt, stream=stream)
+
+    def stream(self, prompt: Any) -> AsyncStream:
+        return AsyncStream(self._chat.stream(prompt))
 
     async def close(self) -> None:
         await asyncio.to_thread(self._chat.close)
@@ -459,11 +551,17 @@ class AsyncRbridge:
     def usage(self) -> Usage:
         return self.sync.usage
 
-    async def run(self, prompt: Any, *, stream: bool = False, **options: Any) -> Any:
-        if stream:
-            s = await asyncio.to_thread(self.sync.run, prompt, stream=True, **options)
-            return AsyncStream(s)
+    async def run(self, prompt: Any, **options: Any) -> Any:
+        """As Rbridge.run: stream=True prints as the answer is written, chat
+        continues the conversation, a list of messages is sent in order."""
         return await asyncio.to_thread(self.sync.run, prompt, **options)
+
+    async def stream(self, prompt: Any, **options: Any) -> AsyncStream:
+        """The answer as an async iterator of text chunks."""
+        return AsyncStream(await asyncio.to_thread(self.sync.stream, prompt, **options))
+
+    async def reset(self) -> None:
+        await asyncio.to_thread(self.sync.reset)
 
     async def run_many(self, prompts: Sequence[Any], **options: Any) -> List[Any]:
         return await asyncio.to_thread(self.sync.run_many, prompts, **options)
