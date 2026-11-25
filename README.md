@@ -40,20 +40,26 @@ print(rb.run("Summarise README.md").text)
 
 That is all the setup there is: `Rbridge()` finds rbridge (or the copy that came with this package), starts its daemon if it is not running, and the workspace is the current folder. `runtime` is any id from `rb.runtimes()`, such as `claude-code`, `opencode` or `codex`; leave it out and rbridge picks one.
 
-**Stream** the answer as it is written:
+**Stream** the answer as it is written. It is printed for you, and `run` still returns the whole answer:
 
 ```python
-for chunk in rb.run("Explain app.py", stream=True):
-    print(chunk, end="", flush=True)
+rb.run("Explain app.py", stream=True)
 ```
 
-**Chat**, keeping the conversation:
+**Set it all once.** Options given to `Rbridge(...)` apply to every call. With `chat=True` each `run` continues the same conversation, and a list sends several messages in one call:
 
 ```python
-chat = rb.chat()
-chat.send("What does app.py do?")
-print(chat.send("Now write tests for it").text)
+rb = Rbridge(runtime="claude-code", chat=True, stream=True)
+
+rb.run("What does app.py do?")
+rb.run("Now write tests for it")
+rb.run(["Summarise the tests", "Shorter"])
+rb.reset()                                  # start a new conversation
 ```
+
+Any call can still override a default (`rb.run("...", stream=False)`), and `rb.chat()` gives a separate conversation object when you want several at once (`chat.send(...)`).
+
+To handle the chunks yourself, pass a function, `stream=my_function`, or take the iterator, `for chunk in rb.stream("...")`.
 
 **Run several at once**, in order, without writing any threads:
 
@@ -76,7 +82,8 @@ from rbridge import AsyncRbridge
 
 rb = AsyncRbridge(runtime="claude-code")
 a, b = await asyncio.gather(rb.run("Review a.py"), rb.run("Review b.py"))
-async for chunk in await rb.run("Explain app.py", stream=True):
+await rb.run("Explain app.py", stream=True)
+async for chunk in await rb.stream("Explain app.py"):    # the iterator, if you want it
     print(chunk, end="")
 ```
 
@@ -95,8 +102,10 @@ Every option can be set on `Rbridge(...)` as a default and overridden on any cal
 | `timeout` | Seconds per run |
 | `max_concurrency` | How many `run_many` runs go at once (rbridge still applies its own limits) |
 | `max_cost_usd` | After this much is spent, no new run starts (`rb.usage` has the running total) |
+| `stream` | `True` prints answers as they are written; a function receives the chunks instead |
+| `chat` | `True` makes every `run` continue one conversation |
 
-A `Response` has `text`, `data` (with a schema), `runtime`, `session_id`, `stop_reason`, `usage` and `raw`. A `Stream` yields text; afterwards `stream.response` is the `Response` and `stream.events` every event (tools, plans, usage). Pass `on_event=` to `run` to see events as they happen. Errors are `rbridge.RbridgeError` with a stable `code`.
+A `Response` has `text`, `data` (with a schema), `runtime`, `session_id`, `stop_reason`, `usage` and `raw`. The `Stream` from `rb.stream()` yields text; afterwards `stream.response` is the `Response` and `stream.events` every event (tools, plans, usage). Pass `on_event=` to `run` to see events as they happen. Errors are `rbridge.RbridgeError` with a stable `code`.
 
 ## Lower-level API
 
