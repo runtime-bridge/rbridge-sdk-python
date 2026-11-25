@@ -31,18 +31,90 @@ Until the packages are published, install from Git (the client only; rbridge on 
 ## Use
 
 ```python
+from rbridge import Rbridge
+
+rb = Rbridge(runtime="claude-code")
+
+print(rb.run("Summarise README.md").text)
+```
+
+That is all the setup there is: `Rbridge()` finds rbridge (or the copy that came with this package), starts its daemon if it is not running, and the workspace is the current folder. `runtime` is any id from `rb.runtimes()`, such as `claude-code`, `opencode` or `codex`; leave it out and rbridge picks one.
+
+**Stream** the answer as it is written:
+
+```python
+for chunk in rb.run("Explain app.py", stream=True):
+    print(chunk, end="", flush=True)
+```
+
+**Chat**, keeping the conversation:
+
+```python
+chat = rb.chat()
+chat.send("What does app.py do?")
+print(chat.send("Now write tests for it").text)
+```
+
+**Run several at once**, in order, without writing any threads:
+
+```python
+for r in rb.run_many(["Review a.py", "Review b.py", "Review c.py"]):
+    print(r.text)
+```
+
+**Structured output**, parsed for you:
+
+```python
+r = rb.run("List the TODOs in this project", schema={"type": "object", "properties": {"todos": {"type": "array", "items": {"type": "string"}}}})
+print(r.data["todos"])
+```
+
+**Async** code uses `AsyncRbridge`, with the same calls awaited:
+
+```python
+from rbridge import AsyncRbridge
+
+rb = AsyncRbridge(runtime="claude-code")
+a, b = await asyncio.gather(rb.run("Review a.py"), rb.run("Review b.py"))
+async for chunk in await rb.run("Explain app.py", stream=True):
+    print(chunk, end="")
+```
+
+### Options
+
+Every option can be set on `Rbridge(...)` as a default and overridden on any call:
+
+| Option | Meaning |
+|---|---|
+| `runtime`, `model` | Which runtime, and which of its models |
+| `workspace` | The folder the runtime works in; default the current folder |
+| `skills` | Skill ids, or folders of skills your program ships (added and trusted on first use) |
+| `profile` | `observe` (read-only), `standard` or `controlled` |
+| `approve` | When the runtime asks permission: `False` deny (default), `True` allow, `"read"` reads only, or a function given the request |
+| `sandbox` | `files` or `full`, on Linux |
+| `timeout` | Seconds per run |
+| `max_concurrency` | How many `run_many` runs go at once (rbridge still applies its own limits) |
+| `max_cost_usd` | After this much is spent, no new run starts (`rb.usage` has the running total) |
+
+A `Response` has `text`, `data` (with a schema), `runtime`, `session_id`, `stop_reason`, `usage` and `raw`. A `Stream` yields text; afterwards `stream.response` is the `Response` and `stream.events` every event (tools, plans, usage). Pass `on_event=` to `run` to see events as they happen. Errors are `rbridge.RbridgeError` with a stable `code`.
+
+## Lower-level API
+
+`rb.client` (or `rbridge.connect()`) is the client underneath, for sessions you drive yourself, approvals with options, questions the runtime asks, modes and the daemon's state:
+
+```python
 import rbridge
 
-with rbridge.connect(client="my-app") as rb:
-    result = rb.run(
+with rbridge.connect(client="my-app") as c:
+    result = c.run(
         {"workspace": "/home/me/project", "prompt": "Review this project for security issues", "skills": ["security-audit"]},
         on_event=lambda e: e["type"] == "message.delta" and print(e["data"]["text"], end=""),
-        approver=lambda req: req.get("kind") == "read",  # anything else is denied
+        approver=lambda req: req.get("kind") == "read",
     )
     print(result["output"])
 ```
 
-`connect()` starts a daemon when none is running, using the bundled rbridge (or `RBRIDGE_BIN`, or rbridge on `PATH`); a daemon started this way stops by itself after 30 idle minutes. Pass `start=False` to only connect to one already running. Tasks can be a plain prompt (`rb.run("Summarise README.md")`), and the workspace defaults to the current folder. `connect()` uses the daemon's Unix socket, found the same way rbridge finds it (`RBRIDGE_HOME`, XDG and OS defaults); pass `socket_path` to override. `connect_http()` uses the local HTTP API instead and reads the URL and token from the daemon's runtime directory; the daemon must have `daemon.http.enabled: true`.
+`connect()` starts a daemon when none is running (one that stops by itself after 30 idle minutes); pass `start=False` to only connect to a running one. It uses the daemon's Unix socket, found the same way rbridge finds it (`RBRIDGE_HOME`, XDG and OS defaults); pass `socket_path` to override. `connect_http()` uses the local HTTP API instead and reads the URL and token from the daemon's runtime directory; the daemon must have `daemon.http.enabled: true`.
 
 | Call | What it does |
 |---|---|
