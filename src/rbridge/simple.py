@@ -91,18 +91,35 @@ class Stream:
         self.events: List[Dict[str, Any]] = []
         self._error: Optional[BaseException] = None
         self._finish = finish
+        self._streamed = ""
+        self._ended = False
+        self._mu = threading.Lock()
 
         def on_event(ev: Dict[str, Any]) -> None:
-            self.events.append(ev)
-            if ev.get("type") == "message.delta":
-                self._q.put((ev.get("data") or {}).get("text", ""))
+            with self._mu:
+                if self._ended:
+                    return
+                self.events.append(ev)
+                if ev.get("type") == "message.delta":
+                    chunk = (ev.get("data") or {}).get("text", "")
+                    self._streamed += chunk
+                    self._q.put(chunk)
 
         def work() -> None:
             try:
                 self.response = Response._from(start(on_event))
+                # Deltas can trail the result; whatever has not arrived yet is
+                # taken from the result, so the chunks always add up to it.
+                with self._mu:
+                    self._ended = True
+                    text = self.response.text
+                    if text.startswith(self._streamed) and len(text) > len(self._streamed):
+                        self._q.put(text[len(self._streamed):])
             except BaseException as exc:  # handed to the reader
                 self._error = exc
             finally:
+                with self._mu:
+                    self._ended = True
                 if self._finish:
                     try:
                         self._finish()
@@ -329,8 +346,17 @@ class Chat:
         self._task: Optional[Dict[str, Any]] = None
         self._sink: Optional[Callable[[Dict[str, Any]], None]] = None
         self._turn = threading.Lock()
+        self._seen: set = set()
+        self._done: set = set()
 
     def _events(self, ev: Dict[str, Any]) -> None:
+        # Events from a turn that has ended (they can trail its result) never
+        # reach the next turn's stream.
+        tid = ev.get("turn_id")
+        if tid:
+            if tid in self._done:
+                return
+            self._seen.add(tid)
         if self._sink:
             self._sink(ev)
 
@@ -350,6 +376,7 @@ class Chat:
                     raw = self._session.prompt(self._rb._task(prompt, self._o)["prompt"])
                 finally:
                     self._sink = None
+                    self._done |= self._seen
                 self._rb._count(Response._from(raw))
                 return raw
 
