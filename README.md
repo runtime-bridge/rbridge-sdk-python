@@ -11,6 +11,8 @@ Python client for the [rbridge](https://github.com/runtime-bridge/rbridge) daemo
 
 Standard library only. Python 3.10 or later.
 
+Documentation and examples: <https://runtime-bridge.github.io/docs/sdks/>.
+
 ## Use
 
 Start the daemon once (`rbridge daemon start`), then:
