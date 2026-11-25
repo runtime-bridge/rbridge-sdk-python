@@ -30,6 +30,16 @@ with rbridge.connect(client="my-app") as rb:
 
 `on_event` runs on a background thread for every event. `approver` answers permission requests the policy profile leaves to the caller; return `True`, `False` or `{"allow": ..., "option_id": ..., "remember": ...}`, where `remember` allows the same kind of request for the rest of the session. Without an approver such requests are denied. Errors are `rbridge.RbridgeError` with rbridge's stable `code`.
 
+`on_input` answers questions the runtime asks the user, as a form (`request["schema"]`) or a page to open (`request["url"]`, which rbridge never opens): return `{"action": "accept", "content": {...}}`, `{"action": "decline"}` or `{"action": "cancel"}`. Without it such questions are declined.
+
+ACP runtimes that offer session modes and settings expose them on the session; Claude Code does not, as its permission modes could bypass policy:
+
+```python
+with client.open({"workspace": "/path/to/project"}, mode="code") as s:
+    print(s.modes())                  # {"current": "code", "modes": [...]}
+    s.set_option("model", "large")
+```
+
 Sessions are visible only to the `client` name that opened them.
 
 ## Develop

@@ -147,6 +147,38 @@ class ApprovalTest(unittest.TestCase):
             d.stop()
 
 
+class ExtensionsTest(unittest.TestCase):
+    def test_modes_and_options(self):
+        d = Daemon("echo")
+        try:
+            for c in (rbridge.connect(env=d.env), rbridge.connect_http(env=d.env)):
+                with c, c.open({"workspace": d.workspace}, mode="code") as s:
+                    m = s.modes()
+                    self.assertEqual(m["current"], "code")
+                    self.assertEqual([x["id"] for x in m["modes"]], ["ask", "code"])
+                    s.set_mode("ask")
+                    self.assertEqual(s.set_option("model", "large")[0]["current"], "large")
+                    self.assertEqual(s.prompt("mode?")["output"], "mode: ask model: large")
+                    with self.assertRaises(rbridge.RbridgeError) as cm:
+                        s.set_mode("nope")
+                    self.assertEqual(cm.exception.code, "invalid_input")
+        finally:
+            d.stop()
+
+    def test_on_input(self):
+        d = Daemon("elicit")
+        try:
+            with rbridge.connect(env=d.env) as c:
+                asked = []
+                res = c.run({"workspace": d.workspace, "prompt": "x"},
+                            on_input=lambda req: asked.append(req) or {"action": "accept", "content": {"name": "Ada"}})
+                self.assertEqual(res["output"], "hello Ada")
+                self.assertEqual(asked[0]["mode"], "form")
+                self.assertEqual(c.run({"workspace": d.workspace, "prompt": "x"})["output"], "declined")
+        finally:
+            d.stop()
+
+
 class RuntimeDirTest(unittest.TestCase):
     def test_rules(self):
         self.assertEqual(rbridge.runtime_dir({"RBRIDGE_HOME": "/r"}), os.path.join("/r", "run"))

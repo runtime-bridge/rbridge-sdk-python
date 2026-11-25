@@ -17,6 +17,8 @@ PROTOCOL_VERSION = 1
 Prompt = Union[str, List[Dict[str, Any]]]
 Event = Dict[str, Any]
 Approver = Callable[[Dict[str, Any]], Union[bool, Dict[str, Any]]]
+# Answers a runtime question with {"action": "accept" | "decline" | "cancel", "content": {...}}.
+InputHandler = Callable[[Dict[str, Any]], Dict[str, Any]]
 
 
 class RbridgeError(Exception):
@@ -183,12 +185,19 @@ class _HTTP:
             "sessions.list": ("GET", "/v1/sessions", None),
             "sessions.get": ("GET", f"/v1/sessions/{sid}", None),
             "sessions.open": ("POST", "/v1/sessions", p),
-            "sessions.resume": ("POST", f"/v1/sessions/{sid}/resume", {"model": p.get("model")}),
+            "sessions.resume": ("POST", f"/v1/sessions/{sid}/resume", {"model": p.get("model"), "input": p.get("input", False)}),
+            "sessions.modes": ("GET", f"/v1/sessions/{sid}/modes", None),
+            "sessions.set_mode": ("PUT", f"/v1/sessions/{sid}/mode", {"mode": p.get("mode")}),
+            "sessions.options": ("GET", f"/v1/sessions/{sid}/options", None),
+            "sessions.set_option": ("PUT", "/v1/sessions/{}/options/{}".format(sid, urllib.parse.quote(str(p.get("option_id", "")), safe="")), {"value": p.get("value")}),
             "sessions.prompt": ("POST", f"/v1/sessions/{sid}/turns", {"prompt": p.get("prompt"), "wait": p.get("wait", True)}),
             "sessions.cancel": ("POST", f"/v1/sessions/{sid}/cancel", {}),
             "sessions.close": ("DELETE", f"/v1/sessions/{sid}", None),
             "daemon.status": ("GET", "/v1/status", None),
         }
+        if method == "inputs.answer":
+            path = "/v1/sessions/{}/inputs/{}".format(urllib.parse.quote(p["session_id"], safe=""), urllib.parse.quote(p["input_id"], safe=""))
+            return self._request("POST", path, p)
         if method == "approvals.answer":
             path = "/v1/sessions/{}/approvals/{}".format(urllib.parse.quote(p["session_id"], safe=""), urllib.parse.quote(p["approval_id"], safe=""))
             return self._request("POST", path, p)
@@ -249,6 +258,20 @@ class Session:
     def cancel(self) -> None:
         self._t.call("sessions.cancel", {"id": self.id})
 
+    def modes(self) -> Dict[str, Any]:
+        """Returns {"current": ..., "modes": [...]} for runtimes that offer modes."""
+        return self._t.call("sessions.modes", {"id": self.id})
+
+    def set_mode(self, mode: str) -> Dict[str, Any]:
+        return self._t.call("sessions.set_mode", {"id": self.id, "mode": mode})
+
+    def options(self) -> List[Dict[str, Any]]:
+        """Returns the runtime's session settings, such as its model."""
+        return self._t.call("sessions.options", {"id": self.id})
+
+    def set_option(self, option_id: str, value: Union[str, bool]) -> List[Dict[str, Any]]:
+        return self._t.call("sessions.set_option", {"id": self.id, "option_id": option_id, "value": value})
+
     def close(self) -> None:
         try:
             self._t.call("sessions.close", {"id": self.id})
@@ -282,20 +305,24 @@ class Client:
         return self._t.call("daemon.status")
 
     def open(self, task: Dict[str, Any], on_event: Optional[Callable[[Event], None]] = None,
-             approver: Optional[Approver] = None, model: Optional[str] = None) -> Session:
-        """Opens a session. Approval requests go to approver; without one they are denied."""
+             approver: Optional[Approver] = None, model: Optional[str] = None,
+             mode: Optional[str] = None, on_input: Optional[InputHandler] = None) -> Session:
+        """Opens a session. Approval requests go to approver; without one they are denied.
+        Questions the runtime asks go to on_input; without one they are declined."""
         t = dict(task)
         if "prompt" in t:
             t["prompt"] = _prompt(t["prompt"])
-        record = self._t.call("sessions.open", {"task": t, "model": model})
-        return self._attach(record, on_event, approver)
+        record = self._t.call("sessions.open", {"task": t, "model": model, "mode": mode, "input": on_input is not None})
+        return self._attach(record, on_event, approver, on_input)
 
     def resume(self, session_id: str, on_event: Optional[Callable[[Event], None]] = None,
-               approver: Optional[Approver] = None, model: Optional[str] = None) -> Session:
-        record = self._t.call("sessions.resume", {"id": session_id, "model": model})
-        return self._attach(record, on_event, approver)
+               approver: Optional[Approver] = None, model: Optional[str] = None,
+               on_input: Optional[InputHandler] = None) -> Session:
+        record = self._t.call("sessions.resume", {"id": session_id, "model": model, "input": on_input is not None})
+        return self._attach(record, on_event, approver, on_input)
 
-    def _attach(self, record: Dict[str, Any], on_event: Optional[Callable[[Event], None]], approver: Optional[Approver]) -> Session:
+    def _attach(self, record: Dict[str, Any], on_event: Optional[Callable[[Event], None]], approver: Optional[Approver],
+                on_input: Optional[InputHandler] = None) -> Session:
         session = Session(self._t, record)
 
         def handle(ev: Event) -> None:
@@ -303,6 +330,8 @@ class Client:
                 on_event(ev)
             if ev.get("type") == "approval.required":
                 threading.Thread(target=self._answer, args=(record["id"], ev.get("data") or {}, approver), daemon=True).start()
+            if ev.get("type") == "input.required" and on_input is not None:
+                threading.Thread(target=self._input, args=(record["id"], ev.get("data") or {}, on_input), daemon=True).start()
 
         session._unsubscribe = self._t.subscribe(record["id"], handle)
         return session
@@ -323,10 +352,24 @@ class Client:
         except RbridgeError:
             pass
 
+    def _input(self, session_id: str, request: Dict[str, Any], on_input: InputHandler) -> None:
+        try:
+            answer = on_input(request)
+        except Exception:
+            answer = {"action": "decline"}
+        if not isinstance(answer, dict):
+            answer = {"action": "accept" if answer else "decline"}
+        try:
+            self._t.call("inputs.answer", {"session_id": session_id, "input_id": request.get("id"),
+                                           "action": answer.get("action", "accept"), "content": answer.get("content")})
+        except RbridgeError:
+            pass
+
     def run(self, task: Dict[str, Any], on_event: Optional[Callable[[Event], None]] = None,
-            approver: Optional[Approver] = None, model: Optional[str] = None) -> Dict[str, Any]:
+            approver: Optional[Approver] = None, model: Optional[str] = None,
+            mode: Optional[str] = None, on_input: Optional[InputHandler] = None) -> Dict[str, Any]:
         """Runs a task in a new session and closes it."""
-        with self.open(task, on_event=on_event, approver=approver, model=model) as s:
+        with self.open(task, on_event=on_event, approver=approver, model=model, mode=mode, on_input=on_input) as s:
             return s.prompt(task["prompt"])
 
     def close(self) -> None:
