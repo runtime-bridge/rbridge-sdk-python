@@ -105,6 +105,19 @@ class SimpleTest(unittest.TestCase):
             self.assertIn(("tone", "reviewed"), [(s["id"], s["trust"]) for s in rb.client.skills()])
             self.assertEqual(rb.add_skills(os.path.dirname(skill)), ["tone"])
 
+    def test_models(self):
+        with self.rb() as rb:
+            r = rb.run("mode?", model="large")
+            self.assertIn("model: large", r.text)
+            self.assertEqual(r.model, "large")
+            self.assertTrue(rb.run("mode?", model="auto").model)
+            with self.assertRaises(rbridge.RbridgeError) as cm:
+                rb.run("x", model="larg")
+            self.assertEqual(cm.exception.code, "invalid_input")
+            self.assertIn("did you mean large?", cm.exception.message)
+            fake = next(x for x in rb.runtimes() if x["id"] == "fake")
+            self.assertIn("latest", fake["models"])
+
     def test_budget_stops_new_runs(self):
         with self.rb(max_cost_usd=0.0) as rb:
             with self.assertRaises(rbridge.RbridgeError) as cm:

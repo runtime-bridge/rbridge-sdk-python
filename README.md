@@ -61,7 +61,7 @@ Any call can still override a default (`rb.run("...", stream=False)`), and `rb.c
 
 To handle the chunks yourself, pass a function, `stream=my_function`, or take the iterator, `for chunk in rb.stream("...")`.
 
-**Run several at once**, in order, without writing any threads:
+**Run several at once**, in order, without writing any threads. When rbridge is full (its session slots, or the per-client limit), runs wait their turn instead of failing, and errors rbridge marks as retryable are retried:
 
 ```python
 for r in rb.run_many(["Review a.py", "Review b.py", "Review c.py"]):
@@ -93,19 +93,21 @@ Every option can be set on `Rbridge(...)` as a default and overridden on any cal
 
 | Option | Meaning |
 |---|---|
-| `runtime`, `model` | Which runtime, and which of its models |
+| `runtime` | Which runtime: an id from `runtimes()`; unset lets rbridge pick |
+| `model` | `"latest"` (the runtime's newest flagship), `"auto"` (its own recommended choice), or a model name the runtime accepts; unset uses its configured default. `runtimes()` lists each runtime's names, and `response.model` says which model ran |
 | `workspace` | The folder the runtime works in; default the current folder |
 | `skills` | Skill ids, or folders of skills your program ships (added and trusted on first use) |
 | `profile` | `observe` (read-only), `standard` or `controlled` |
 | `approve` | When the runtime asks permission: `False` deny (default), `True` allow, `"read"` reads only, or a function given the request |
 | `sandbox` | `files` or `full`, on Linux |
 | `timeout` | Seconds per run |
+| `queue_timeout` | Seconds a run may wait for rbridge to have room; unset waits as long as it takes, so runs queue instead of failing |
 | `max_concurrency` | How many `run_many` runs go at once (rbridge still applies its own limits) |
 | `max_cost_usd` | After this much is spent, no new run starts (`rb.usage` has the running total) |
 | `stream` | `True` prints answers as they are written; a function receives the chunks instead |
 | `chat` | `True` makes every `run` continue one conversation |
 
-A `Response` has `text`, `data` (with a schema), `runtime`, `session_id`, `stop_reason`, `usage` and `raw`. The `Stream` from `rb.stream()` yields text; afterwards `stream.response` is the `Response` and `stream.events` every event (tools, plans, usage). Pass `on_event=` to `run` to see events as they happen. Errors are `rbridge.RbridgeError` with a stable `code` (the list is at https://runtime-bridge.github.io/docs/errors/); `budget_exceeded` means `max_cost_usd` is spent.
+A `Response` has `text`, `data` (with a schema), `runtime`, `model`, `session_id`, `stop_reason`, `usage` and `raw`. The `Stream` from `rb.stream()` yields text; afterwards `stream.response` is the `Response` and `stream.events` every event (tools, plans, usage). Pass `on_event=` to `run` to see events as they happen. Errors are `rbridge.RbridgeError` with a stable `code` (the list is at https://runtime-bridge.github.io/docs/errors/); `budget_exceeded` means `max_cost_usd` is spent.
 
 ## Lower-level API
 
