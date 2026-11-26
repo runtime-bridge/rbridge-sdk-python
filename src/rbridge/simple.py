@@ -215,6 +215,7 @@ class Rbridge:
         self._app, self._env, self._client = app, env, client
         self._lock = threading.Lock()
         self._skill_dirs: Dict[str, str] = {}
+        self._skill_lock = threading.Lock()  # parallel runs add a shared folder once
         self.stream_to, self.chatting = stream, chat
         self._conversation: Optional["Chat"] = None
 
@@ -244,22 +245,25 @@ class Rbridge:
         for s in skills:
             if os.path.isdir(s):
                 path = os.path.abspath(s)
-                with self._lock:
-                    sid = self._skill_dirs.get(path)
-                if sid is None:
-                    items = self.client.add_skills(path, trust="reviewed")["items"]
-                    failed = [i for i in items if i["status"] == "failed"]
-                    if failed:
-                        raise RbridgeError("skill_invalid", f"{failed[0].get('id')}: {failed[0].get('reason')}")
-                    if len(items) != 1:
-                        raise RbridgeError("invalid_input", f"{s} holds {len(items)} skills; name one, or add them with add_skills")
-                    sid = items[0]["id"]
-                    with self._lock:
-                        self._skill_dirs[path] = sid
+                with self._skill_lock:
+                    sid = self._add_folder(path, s)
                 ids.append(sid)
             else:
                 ids.append(s)
         return ids
+
+    def _add_folder(self, path: str, given: str) -> str:
+        sid = self._skill_dirs.get(path)
+        if sid is None:
+            items = self.client.add_skills(path, trust="reviewed")["items"]
+            failed = [i for i in items if i["status"] == "failed"]
+            if failed:
+                raise RbridgeError("skill_invalid", f"{failed[0].get('id')}: {failed[0].get('reason')}")
+            if len(items) != 1:
+                raise RbridgeError("invalid_input", f"{given} holds {len(items)} skills; name one, or add them with add_skills")
+            sid = items[0]["id"]
+            self._skill_dirs[path] = sid
+        return sid
 
     def _task(self, prompt: Any, o: Dict[str, Any]) -> Dict[str, Any]:
         t = _task({"prompt": prompt, "workspace": o["workspace"]})
