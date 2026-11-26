@@ -68,11 +68,34 @@ for r in rb.run_many(["Review a.py", "Review b.py", "Review c.py"]):
     print(r.text)
 ```
 
-**Structured output**, parsed for you:
+**Structured output**, parsed for you. A Pydantic model works as the schema, and `parsed` is then an instance, ready to store:
 
 ```python
-r = rb.run("List the TODOs in this project", schema={"type": "object", "properties": {"todos": {"type": "array", "items": {"type": "string"}}}})
-print(r.data["todos"])
+from pydantic import BaseModel
+
+class Todos(BaseModel):
+    todos: list[str]
+
+r = rb.run("List the TODOs in this project", schema=Todos)
+print(r.parsed.todos)          # r.data is the same answer as a dict; a JSON schema dict works too
+```
+
+**Documents**, as paths or uploads. rbridge puts them in a working folder of their own for the run, gives Word files a text copy, and tells the runtime about them:
+
+```python
+r = rb.run("Summarise these", files=["report.pdf", "bill.docx"])
+
+@app.post("/summarise")                                   # FastAPI
+async def summarise(file: UploadFile):
+    return (await arb.run("Summarise this", files=[file])).text
+```
+
+**Skills** your program ships are named by folder (added and trusted on first use), and `rb.skills()` lists the library, for a page that lets people choose:
+
+```python
+rb.run("Review this", skills=["./skills/security-review"])
+for s in rb.skills():
+    print(s["id"], s["description"])
 ```
 
 **Async** code uses `AsyncRbridge`, with the same calls awaited:
@@ -95,8 +118,10 @@ Every option can be set on `Rbridge(...)` as a default and overridden on any cal
 |---|---|
 | `runtime` | Which runtime: an id from `runtimes()`; unset lets rbridge pick |
 | `model` | `"latest"` (the runtime's newest flagship), `"auto"` (its own recommended choice), or a model name the runtime accepts; unset uses its configured default. `runtimes()` lists each runtime's names, and `response.model` says which model ran |
-| `workspace` | The folder the runtime works in; default the current folder |
-| `skills` | Skill ids, or folders of skills your program ships (added and trusted on first use) |
+| `files` | Paths, `(name, bytes)` pairs, open files or uploaded files (FastAPI's `UploadFile`) |
+| `workspace` | The folder the runtime works in; default the current folder, or with files a folder rbridge makes for them |
+| `skills` | Skill ids, or folders of skills your program ships (rbridge adds and trusts them on first use) |
+| `schema` | A JSON schema dict, or a Pydantic model; the answer is in `data`, and with a model also in `parsed` |
 | `profile` | `observe` (read-only), `standard` or `controlled` |
 | `approve` | When the runtime asks permission: `False` deny (default), `True` allow, `"read"` reads only, or a function given the request |
 | `sandbox` | `files` or `full`, on Linux |
