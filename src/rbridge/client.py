@@ -24,11 +24,13 @@ InputHandler = Callable[[Dict[str, Any]], Dict[str, Any]]
 class RbridgeError(Exception):
     """An error carrying one of rbridge's stable error codes."""
 
-    def __init__(self, code: str, message: str, details: Optional[Dict[str, str]] = None):
+    def __init__(self, code: str, message: str, details: Optional[Dict[str, str]] = None, retryable: bool = False):
         super().__init__(message)
         self.code = code
         self.message = message
         self.details = details or {}
+        #: True when the same request may succeed later (every slot busy, rate limited).
+        self.retryable = retryable
 
     def __str__(self) -> str:
         return f"{self.code}: {self.message}"
@@ -119,7 +121,8 @@ class _IPC:
             return
         if "error" in m:
             d = m["error"].get("data") or {}
-            slot["error"] = RbridgeError(d.get("code", "internal_error"), d.get("message", m["error"].get("message", "")), d.get("details"))
+            slot["error"] = RbridgeError(d.get("code", "internal_error"), d.get("message", m["error"].get("message", "")), d.get("details"),
+                                         bool(d.get("retryable")))
         else:
             slot["result"] = m.get("result")
         slot["done"].set()
@@ -181,7 +184,8 @@ class _HTTP:
                 err = json.loads(e.read()).get("error", {})
             except ValueError:
                 err = {}
-            raise RbridgeError(err.get("code", "internal_error"), err.get("message", str(e)), err.get("details")) from None
+            raise RbridgeError(err.get("code", "internal_error"), err.get("message", str(e)), err.get("details"),
+                               bool(err.get("retryable")) or e.code == 429) from None
         except urllib.error.URLError as e:
             raise RbridgeError("provider_unavailable", f"cannot reach the daemon at {self.url}: {e.reason}") from None
 

@@ -25,8 +25,10 @@ import asyncio
 import json
 import os
 import queue
+import random
 import sys
 import threading
+import time
 from concurrent.futures import ThreadPoolExecutor
 from dataclasses import dataclass, field
 from typing import Any, AsyncIterator, Callable, Dict, Iterator, List, Optional, Sequence, Union
@@ -59,6 +61,8 @@ class Response:
     runtime: str
     session_id: str
     stop_reason: str
+    #: The model that ran, as the runtime reported it (what latest or auto became).
+    model: str = ""
     usage: Usage = field(default_factory=Usage)
     #: The answer parsed as JSON when a schema was given, else None.
     data: Any = None
@@ -78,7 +82,7 @@ class Response:
             except ValueError:
                 pass
         return cls(text=raw.get("output", ""), runtime=raw.get("provider", ""), session_id=raw.get("session_id", ""),
-                   stop_reason=raw.get("stop_reason", ""), data=data, raw=raw,
+                   stop_reason=raw.get("stop_reason", ""), model=raw.get("model", ""), data=data, raw=raw,
                    usage=Usage(int(u.get("input_tokens") or 0), int(u.get("output_tokens") or 0), float(u.get("cost_usd") or 0)))
 
 
@@ -186,7 +190,9 @@ class Rbridge:
 
     Every argument is a default for the calls that follow, and each call can
     override it: runtime (an id from rb.runtimes(), such as "claude-code";
-    None lets rbridge choose), model, workspace (default: the current
+    None lets rbridge choose), model ("latest" for the runtime's newest
+    flagship, "auto" for its own recommended choice, or a model name; unset
+    uses the runtime's configured default), workspace (default: the current
     folder), skills, profile ("observe" for read-only, "standard",
     "controlled"), approve (what to do when the runtime asks permission:
     False to deny, True to allow, "read" for reads only, or a function),
@@ -203,12 +209,15 @@ class Rbridge:
     def __init__(self, runtime: Optional[str] = None, *, model: Optional[str] = None,
                  workspace: Optional[str] = None, skills: Sequence[str] = (), profile: Optional[str] = None,
                  approve: Approve = False, sandbox: Optional[str] = None, timeout: Optional[float] = None,
-                 max_concurrency: int = 4, max_cost_usd: Optional[float] = None, stream: StreamTo = False,
+                 max_concurrency: int = 4, max_cost_usd: Optional[float] = None, queue_timeout: Optional[float] = None,
+                 stream: StreamTo = False,
                  chat: bool = False, app: str = "default", client: Optional[Client] = None,
                  env: Optional[Dict[str, str]] = None):
         self.defaults: Dict[str, Any] = dict(runtime=runtime, model=model, workspace=workspace, skills=list(skills),
                                              profile=profile, approve=approve, sandbox=sandbox, timeout=timeout)
         self.max_concurrency = max_concurrency
+        #: Seconds a run may wait for rbridge to have room; None waits as long as it takes.
+        self.queue_timeout = queue_timeout
         self.max_cost_usd = max_cost_usd
         #: Tokens and cost across every run made through this object.
         self.usage = Usage()
@@ -279,6 +288,8 @@ class Rbridge:
             t["output_schema"] = o["schema"]
         if o["timeout"]:
             t["timeout"] = int(o["timeout"] * 1e9)
+        # Wait for a free session slot instead of failing when rbridge is busy.
+        t["slot_wait"] = -1 if self.queue_timeout is None else max(1, int(self.queue_timeout * 1e9))
         return t
 
     def _count(self, r: Response) -> Response:
@@ -287,7 +298,19 @@ class Rbridge:
         return r
 
     def _open(self, t: Dict[str, Any], o: Dict[str, Any], on_event: Optional[Callable[[Dict[str, Any]], None]]) -> Session:
-        return self.client.open(t, on_event=on_event, approver=_approver(o["approve"]), model=o["model"])
+        """Opens a session, retrying while rbridge says the request may succeed
+        later (rate limits, a daemon restarting). Nothing has run yet, so a
+        retry repeats no work; a prompt is never retried."""
+        give_up = None if self.queue_timeout is None else time.monotonic() + self.queue_timeout
+        delay = 0.2
+        while True:
+            try:
+                return self.client.open(t, on_event=on_event, approver=_approver(o["approve"]), model=o["model"])
+            except RbridgeError as e:
+                if not e.retryable or (give_up is not None and time.monotonic() + delay > give_up):
+                    raise
+            time.sleep(delay + random.uniform(0, delay / 2))
+            delay = min(delay * 2, 5.0)
 
     # --------------------------------------------------------------- calls
 
@@ -395,7 +418,8 @@ class Rbridge:
     def runtimes(self) -> List[Dict[str, Any]]:
         """The runtimes rbridge knows, with whether each is installed."""
         return [{"id": p["id"], "name": p.get("display_name", p["id"]), "available": (p.get("runtime") or {}).get("health") == "available",
-                 "version": (p.get("runtime") or {}).get("version")} for p in self.client.providers()]
+                 "version": (p.get("runtime") or {}).get("version"), "models": p.get("model_names") or {}}
+                for p in self.client.providers()]
 
     def add_skills(self, path: Union[str, Sequence[str]], *, trust: str = "reviewed", **options: Any) -> List[str]:
         """Adds every skill in a folder (or several) and returns their ids.
