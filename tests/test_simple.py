@@ -161,5 +161,57 @@ class SimpleApprovalTest(unittest.TestCase):
             d.stop()
 
 
+
+class FilesAndSchemasTest(unittest.TestCase):
+    @classmethod
+    def setUpClass(cls):
+        cls.d = Daemon("echo")
+
+    @classmethod
+    def tearDownClass(cls):
+        cls.d.stop()
+
+    def test_files_go_to_the_runtime(self):
+        import io
+        src = os.path.join(self.d.home, "in")
+        os.makedirs(src, exist_ok=True)
+        with open(os.path.join(src, "notes.md"), "w") as f:
+            f.write("# Notes\n")
+
+        class Upload:  # the shape of FastAPI's UploadFile
+            filename = "report.txt"
+            file = io.BytesIO(b"uploaded text")
+
+        with Rbridge(env=self.d.env) as rb:
+            r = rb.run("read them", files=[os.path.join(src, "notes.md"), ("data.csv", b"a,b\n1,2\n"), Upload()])
+            self.assertIn("Files for this task, in your working folder: notes.md; data.csv; report.txt.", r.text)
+            self.assertIn("read them", r.text)
+
+    def test_pydantic_schema(self):
+        try:
+            import pydantic
+        except ImportError:
+            self.skipTest("pydantic not installed")
+
+        class Answer(pydantic.BaseModel):
+            echo: str
+
+        with Rbridge(env=self.d.env, workspace=self.d.workspace) as rb:
+            r = rb.run("x", schema=Answer)
+            self.assertIsNotNone(r.raw)  # the fake runtime returns no JSON; nothing to parse
+            self.assertIsNone(r.parsed)
+
+    def test_skills_list(self):
+        skill = os.path.join(self.d.home, "src2", "tidy")
+        os.makedirs(skill)
+        with open(os.path.join(skill, "SKILL.md"), "w") as f:
+            f.write("---\nname: tidy\ndescription: Keep things tidy.\n---\nTidy.\n")
+        with Rbridge(env=self.d.env) as rb:
+            rb.add_skills(skill)
+            self.assertIn({"id": "tidy", "description": "Keep things tidy.", "trust": "reviewed", "version": None, "scripts": False},
+                          rb.skills())
+
+
+
 if __name__ == "__main__":
     unittest.main()

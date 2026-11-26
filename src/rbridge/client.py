@@ -50,7 +50,13 @@ def _task(task: Union[str, Dict[str, Any]]) -> Dict[str, Any]:
     the workspace defaults to the current folder, and a relative workspace is
     made absolute (the daemon runs elsewhere and needs a full path)."""
     t = {"prompt": task} if isinstance(task, str) else dict(task)
-    t["workspace"] = os.path.abspath(t.get("workspace") or os.getcwd())
+    if t.get("files") and not t.get("workspace"):
+        # rbridge makes a working folder holding only the files.
+        t.pop("workspace", None)
+    else:
+        t["workspace"] = os.path.abspath(t.get("workspace") or os.getcwd())
+    if t.get("files"):
+        t["files"] = [os.path.abspath(f) for f in t["files"]]
     return t
 
 

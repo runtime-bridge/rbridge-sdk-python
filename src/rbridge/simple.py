@@ -66,6 +66,8 @@ class Response:
     usage: Usage = field(default_factory=Usage)
     #: The answer parsed as JSON when a schema was given, else None.
     data: Any = None
+    #: With a Pydantic model as the schema, the answer as that model.
+    parsed: Any = None
     #: The full result as the daemon sent it.
     raw: Dict[str, Any] = field(default_factory=dict, repr=False)
 
@@ -169,6 +171,57 @@ def _deliver(s: "Stream", stream: StreamTo) -> Response:
     return s.response
 
 
+def _json_schema(schema: Any) -> Any:
+    """A JSON schema from a dict, or from a Pydantic model class."""
+    if hasattr(schema, "model_json_schema"):
+        return schema.model_json_schema()
+    return schema
+
+
+def _parse(r: Response, schema: Any) -> Response:
+    """With a Pydantic model as the schema, the answer as that model."""
+    if r is not None and hasattr(schema, "model_validate") and r.data is not None:
+        r.parsed = schema.model_validate(r.data)
+    return r
+
+
+def _stage(files: Sequence[Any]) -> "tuple[List[str], Callable[[], None]]":
+    """Absolute paths for the files a run brings. Paths are used as they are;
+    uploads (FastAPI's UploadFile, open files, or (name, bytes) pairs) are
+    written to a temporary folder, removed once rbridge has copied them."""
+    import shutil
+    import tempfile
+
+    paths: List[str] = []
+    tmp: Optional[str] = None
+
+    def spill(name: str, data: Any) -> str:
+        nonlocal tmp
+        if tmp is None:
+            tmp = tempfile.mkdtemp(prefix="rbridge-upload-")
+        dest = os.path.join(tmp, os.path.basename(name) or "upload")
+        with open(dest, "wb") as f:
+            if isinstance(data, (bytes, bytearray, memoryview)):
+                f.write(data)
+            else:
+                shutil.copyfileobj(data, f)
+        return dest
+
+    for item in files or []:
+        if isinstance(item, (str, os.PathLike)):
+            paths.append(os.path.abspath(os.fspath(item)))
+        elif isinstance(item, tuple) and len(item) == 2:
+            paths.append(spill(item[0], item[1]))
+        elif hasattr(item, "filename") and hasattr(item, "file"):  # FastAPI / Starlette UploadFile
+            item.file.seek(0)
+            paths.append(spill(item.filename, item.file))
+        elif hasattr(item, "read") and hasattr(item, "name"):  # an open file
+            paths.append(spill(os.path.basename(item.name), item))
+        else:
+            raise TypeError("files takes paths, (name, bytes) pairs, open files or uploaded files")
+    return paths, (lambda: shutil.rmtree(tmp, ignore_errors=True)) if tmp else (lambda: None)
+
+
 def _messages(prompt: Any) -> bool:
     return isinstance(prompt, (list, tuple)) and bool(prompt) and all(isinstance(p, str) for p in prompt)
 
@@ -189,7 +242,9 @@ class Rbridge:
     """One place to run prompts on the agent runtimes installed here.
 
     Every argument is a default for the calls that follow, and each call can
-    override it: runtime (an id from rb.runtimes(), such as "claude-code";
+    override it: files (paths, or uploads such as FastAPI's UploadFile; rbridge
+    puts them in a working folder of their own and tells the runtime),
+    runtime (an id from rb.runtimes(), such as "claude-code";
     None lets rbridge choose), model ("latest" for the runtime's newest
     flagship, "auto" for its own recommended choice, or a model name; unset
     uses the runtime's configured default), workspace (default: the current
@@ -214,7 +269,8 @@ class Rbridge:
                  chat: bool = False, app: str = "default", client: Optional[Client] = None,
                  env: Optional[Dict[str, str]] = None):
         self.defaults: Dict[str, Any] = dict(runtime=runtime, model=model, workspace=workspace, skills=list(skills),
-                                             profile=profile, approve=approve, sandbox=sandbox, timeout=timeout)
+                                             profile=profile, approve=approve, sandbox=sandbox, timeout=timeout,
+                                             files=[])
         self.max_concurrency = max_concurrency
         #: Seconds a run may wait for rbridge to have room; None waits as long as it takes.
         self.queue_timeout = queue_timeout
@@ -223,8 +279,6 @@ class Rbridge:
         self.usage = Usage()
         self._app, self._env, self._client = app, env, client
         self._lock = threading.Lock()
-        self._skill_dirs: Dict[str, str] = {}
-        self._skill_lock = threading.Lock()  # parallel runs add a shared folder once
         self.stream_to, self.chatting = stream, chat
         self._conversation: Optional["Chat"] = None
 
@@ -247,45 +301,22 @@ class Rbridge:
             raise RbridgeError("budget_exceeded", f"spent ${self.usage.cost_usd:.4f} of the ${self.max_cost_usd} budget")
         return o
 
-    def _skill_ids(self, skills: Sequence[str]) -> List[str]:
-        """Skill ids, adding any given as a folder path (a skill your program
-        ships, so it is trusted as reviewed)."""
-        ids = []
-        for s in skills:
-            if os.path.isdir(s):
-                path = os.path.abspath(s)
-                with self._skill_lock:
-                    sid = self._add_folder(path, s)
-                ids.append(sid)
-            else:
-                ids.append(s)
-        return ids
-
-    def _add_folder(self, path: str, given: str) -> str:
-        sid = self._skill_dirs.get(path)
-        if sid is None:
-            items = self.client.add_skills(path, trust="reviewed")["items"]
-            failed = [i for i in items if i["status"] == "failed"]
-            if failed:
-                raise RbridgeError("skill_invalid", f"{failed[0].get('id')}: {failed[0].get('reason')}")
-            if len(items) != 1:
-                raise RbridgeError("invalid_input", f"{given} holds {len(items)} skills; name one, or add them with add_skills")
-            sid = items[0]["id"]
-            self._skill_dirs[path] = sid
-        return sid
-
     def _task(self, prompt: Any, o: Dict[str, Any]) -> Dict[str, Any]:
         t = _task({"prompt": prompt, "workspace": o["workspace"]})
+        if o["files"] and not o["workspace"]:
+            # rbridge makes a working folder holding only the files.
+            t.pop("workspace", None)
         if o["runtime"]:
             t["provider"] = o["runtime"]
         if o["skills"]:
-            t["skills"] = self._skill_ids(o["skills"])
+            # A folder (of one skill or several) is added and trusted by rbridge.
+            t["skills"] = [os.path.abspath(s) if os.path.isdir(s) else s for s in o["skills"]]
         if o["profile"]:
             t["profile"] = o["profile"]
         if o["sandbox"]:
             t["sandbox"] = o["sandbox"]
         if o.get("schema") is not None:
-            t["output_schema"] = o["schema"]
+            t["output_schema"] = _json_schema(o["schema"])
         if o["timeout"]:
             t["timeout"] = int(o["timeout"] * 1e9)
         # Wait for a free session slot instead of failing when rbridge is busy.
@@ -303,14 +334,21 @@ class Rbridge:
         retry repeats no work; a prompt is never retried."""
         give_up = None if self.queue_timeout is None else time.monotonic() + self.queue_timeout
         delay = 0.2
-        while True:
-            try:
-                return self.client.open(t, on_event=on_event, approver=_approver(o["approve"]), model=o["model"])
-            except RbridgeError as e:
-                if not e.retryable or (give_up is not None and time.monotonic() + delay > give_up):
-                    raise
-            time.sleep(delay + random.uniform(0, delay / 2))
-            delay = min(delay * 2, 5.0)
+        paths, cleanup = _stage(o["files"])
+        if paths:
+            t = {**t, "files": paths}
+        try:
+            while True:
+                try:
+                    # rbridge copies the files when the session opens.
+                    return self.client.open(t, on_event=on_event, approver=_approver(o["approve"]), model=o["model"])
+                except RbridgeError as e:
+                    if not e.retryable or (give_up is not None and time.monotonic() + delay > give_up):
+                        raise
+                time.sleep(delay + random.uniform(0, delay / 2))
+                delay = min(delay * 2, 5.0)
+        finally:
+            cleanup()
 
     # --------------------------------------------------------------- calls
 
@@ -359,10 +397,10 @@ class Rbridge:
             return self._default_chat(options).send(prompt, stream=stream)
         o = self._options({**options, "schema": schema})
         if stream:
-            return _deliver(self._stream(prompt, o, on_event), stream)
+            return _parse(_deliver(self._stream(prompt, o, on_event), stream), schema)
         t = self._task(prompt, o)
         with self._open(t, o, on_event) as s:
-            return self._count(Response._from(s.prompt(t["prompt"])))
+            return _parse(self._count(Response._from(s.prompt(t["prompt"]))), schema)
 
     def stream(self, prompt: Any, *, chat: Optional[bool] = None, schema: Optional[Dict[str, Any]] = None,
                on_event: Optional[Callable[[Dict[str, Any]], None]] = None, **options: Any) -> "Stream":
@@ -420,6 +458,13 @@ class Rbridge:
         return [{"id": p["id"], "name": p.get("display_name", p["id"]), "available": (p.get("runtime") or {}).get("health") == "available",
                  "version": (p.get("runtime") or {}).get("version"), "models": p.get("model_names") or {}}
                 for p in self.client.providers()]
+
+    def skills(self) -> List[Dict[str, Any]]:
+        """The skills in rbridge's library: id, description, trust, version
+        and whether it has scripts, for a program to show or choose from."""
+        return [{"id": s["id"], "description": s.get("description", ""), "trust": s.get("trust"),
+                 "version": s.get("version") or None, "scripts": bool(s.get("has_scripts"))}
+                for s in self.client.skills()]
 
     def add_skills(self, path: Union[str, Sequence[str]], *, trust: str = "reviewed", **options: Any) -> List[str]:
         """Adds every skill in a folder (or several) and returns their ids.
@@ -496,8 +541,8 @@ class Chat:
         if _messages(prompt):
             return [self.send(p, stream=stream) for p in prompt]
         if stream:
-            return _deliver(self.stream(prompt), stream)
-        return Response._from(self._start(prompt)(None))
+            return _parse(_deliver(self.stream(prompt), stream), self._o.get("schema"))
+        return _parse(Response._from(self._start(prompt)(None)), self._o.get("schema"))
 
     def stream(self, prompt: Any) -> "Stream":
         """The answer as an iterator of text chunks."""
@@ -599,6 +644,9 @@ class AsyncRbridge:
 
     async def runtimes(self) -> List[Dict[str, Any]]:
         return await asyncio.to_thread(self.sync.runtimes)
+
+    async def skills(self) -> List[Dict[str, Any]]:
+        return await asyncio.to_thread(self.sync.skills)
 
     async def add_skills(self, path: Union[str, Sequence[str]], **options: Any) -> List[str]:
         return await asyncio.to_thread(self.sync.add_skills, path, **options)
