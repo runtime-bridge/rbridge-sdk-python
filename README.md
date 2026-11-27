@@ -57,7 +57,7 @@ rb.run(["Summarise the tests", "Shorter"])
 rb.reset()                                  # start a new conversation
 ```
 
-Any call can still override a default (`rb.run("...", stream=False)`), and `rb.chat()` gives a separate conversation object when you want several at once (`chat.send(...)`).
+Any call can still override a default (`rb.run("...", stream=False)`), and `rb.chat()` gives a separate conversation object when you want several at once (`chat.send(...)`). Conversations end when your program exits, even without `rb.close()`, so they never hold rbridge's slots afterwards; `rb.reset()` or `rb.close()` ends them sooner.
 
 To handle the chunks yourself, pass a function, `stream=my_function`, or take the iterator, `for chunk in rb.stream("...")`.
 

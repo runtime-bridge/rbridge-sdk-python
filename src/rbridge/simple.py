@@ -22,6 +22,7 @@ Rbridge.client for anything this does not cover.
 from __future__ import annotations
 
 import asyncio
+import atexit
 import json
 import os
 import queue
@@ -29,6 +30,7 @@ import random
 import sys
 import threading
 import time
+import weakref
 from concurrent.futures import ThreadPoolExecutor
 from dataclasses import dataclass, field
 from typing import Any, AsyncIterator, Callable, Dict, Iterator, List, Optional, Sequence, Union
@@ -281,6 +283,10 @@ class Rbridge:
         self._lock = threading.Lock()
         self.stream_to, self.chatting = stream, chat
         self._conversation: Optional["Chat"] = None
+        # Conversations still open. A program that ends without close() must
+        # not leave them in the daemon, holding its slots until they time out.
+        self._chats: "weakref.WeakSet[Chat]" = weakref.WeakSet()
+        atexit.register(_close_at_exit, weakref.ref(self))
 
     # ------------------------------------------------------------ plumbing
 
@@ -477,6 +483,8 @@ class Rbridge:
 
     def close(self) -> None:
         self.reset()
+        for chat in list(self._chats):
+            chat.close()
         with self._lock:
             if self._client is not None:
                 self._client.close()
@@ -489,11 +497,21 @@ class Rbridge:
         self.close()
 
 
+def _close_at_exit(ref: "weakref.ReferenceType[Rbridge]") -> None:
+    rb = ref()
+    if rb is not None:
+        try:
+            rb.close()
+        except Exception:  # the program is ending; a failed close must not raise there
+            pass
+
+
 class Chat:
     """A conversation: each send() continues the same session."""
 
     def __init__(self, rb: Rbridge, o: Dict[str, Any]):
         self._rb, self._o = rb, o
+        rb._chats.add(self)
         self._session: Optional[Session] = None
         self._task: Optional[Dict[str, Any]] = None
         self._sink: Optional[Callable[[Dict[str, Any]], None]] = None
