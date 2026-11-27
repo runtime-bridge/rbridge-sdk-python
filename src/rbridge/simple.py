@@ -563,6 +563,33 @@ class Chat:
 # ----------------------------------------------------------------- async
 
 
+async def _off(fn: Callable[..., Any], *args: Any, **kwargs: Any) -> Any:
+    """Runs a blocking call on a thread of its own and waits for it.
+
+    Not on asyncio's shared default pool: a call there can wait a long time
+    for a free rbridge slot, and with enough of them waiting, the pool has no
+    thread left for the call that would free a slot (a conversation's next
+    turn, or its close). A thread that only waits costs next to nothing.
+    """
+    loop = asyncio.get_running_loop()
+    done = loop.create_future()
+
+    def settle(ok: bool, value: Any) -> None:
+        if not done.cancelled():
+            done.set_result(value) if ok else done.set_exception(value)
+
+    def work() -> None:
+        try:
+            value = fn(*args, **kwargs)
+        except BaseException as exc:  # handed to the awaiting task
+            loop.call_soon_threadsafe(settle, False, exc)
+        else:
+            loop.call_soon_threadsafe(settle, True, value)
+
+    threading.Thread(target=work, name="rbridge-call", daemon=True).start()
+    return await done
+
+
 class AsyncStream:
     """Stream for async code: async for chunk in stream."""
 
@@ -580,13 +607,13 @@ class AsyncStream:
     async def __aiter__(self) -> AsyncIterator[str]:
         it = iter(self._stream)
         while True:
-            chunk = await asyncio.to_thread(next, it, _DONE)
+            chunk = await _off(next, it, _DONE)
             if chunk is _DONE:
                 return
             yield chunk
 
     async def text(self) -> str:
-        return await asyncio.to_thread(self._stream.text)
+        return await _off(self._stream.text)
 
 
 class AsyncChat:
@@ -598,13 +625,13 @@ class AsyncChat:
         return self._chat.id
 
     async def send(self, prompt: Any, *, stream: StreamTo = None) -> Any:
-        return await asyncio.to_thread(self._chat.send, prompt, stream=stream)
+        return await _off(self._chat.send, prompt, stream=stream)
 
     def stream(self, prompt: Any) -> AsyncStream:
         return AsyncStream(self._chat.stream(prompt))
 
     async def close(self) -> None:
-        await asyncio.to_thread(self._chat.close)
+        await _off(self._chat.close)
 
     async def __aenter__(self) -> "AsyncChat":
         return self
@@ -627,32 +654,32 @@ class AsyncRbridge:
     async def run(self, prompt: Any, **options: Any) -> Any:
         """As Rbridge.run: stream=True prints as the answer is written, chat
         continues the conversation, a list of messages is sent in order."""
-        return await asyncio.to_thread(self.sync.run, prompt, **options)
+        return await _off(self.sync.run, prompt, **options)
 
     async def stream(self, prompt: Any, **options: Any) -> AsyncStream:
         """The answer as an async iterator of text chunks."""
-        return AsyncStream(await asyncio.to_thread(self.sync.stream, prompt, **options))
+        return AsyncStream(await _off(self.sync.stream, prompt, **options))
 
     async def reset(self) -> None:
-        await asyncio.to_thread(self.sync.reset)
+        await _off(self.sync.reset)
 
     async def run_many(self, prompts: Sequence[Any], **options: Any) -> List[Any]:
-        return await asyncio.to_thread(self.sync.run_many, prompts, **options)
+        return await _off(self.sync.run_many, prompts, **options)
 
     def chat(self, **options: Any) -> AsyncChat:
         return AsyncChat(self.sync.chat(**options))
 
     async def runtimes(self) -> List[Dict[str, Any]]:
-        return await asyncio.to_thread(self.sync.runtimes)
+        return await _off(self.sync.runtimes)
 
     async def skills(self) -> List[Dict[str, Any]]:
-        return await asyncio.to_thread(self.sync.skills)
+        return await _off(self.sync.skills)
 
     async def add_skills(self, path: Union[str, Sequence[str]], **options: Any) -> List[str]:
-        return await asyncio.to_thread(self.sync.add_skills, path, **options)
+        return await _off(self.sync.add_skills, path, **options)
 
     async def close(self) -> None:
-        await asyncio.to_thread(self.sync.close)
+        await _off(self.sync.close)
 
     async def __aenter__(self) -> "AsyncRbridge":
         return self
