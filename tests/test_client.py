@@ -22,7 +22,7 @@ FAKE_AGENT = os.environ.get("RBRIDGE_FAKE_AGENT", os.path.join(SIBLING, "rbridge
 
 
 class Daemon:
-    def __init__(self, scenario="echo"):
+    def __init__(self, scenario="echo", execution=()):
         self.home = tempfile.mkdtemp(prefix="rbpy-")
         self.workspace = os.path.join(self.home, "ws")
         os.makedirs(self.workspace)
@@ -41,6 +41,7 @@ class Daemon:
                 "  requests_per_second: 1000",
                 "execution:",
                 "  kill_grace_period: 1s",
+                *(f"  {line}" for line in execution),
                 "",
             ]))
         env = dict(os.environ, RBRIDGE_HOME=self.home, RBRIDGE_FAKE_ACP_SCENARIO=scenario)

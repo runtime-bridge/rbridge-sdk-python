@@ -143,6 +143,37 @@ class SimpleTest(unittest.TestCase):
         self.assertEqual(asyncio.run(main()), ("echo: a", "echo: b", "echo: s", True))
 
 
+class AsyncCrowdTest(unittest.TestCase):
+    """Many conversations at once, more than rbridge has slots and the default
+    thread pool has threads: each must still finish."""
+
+    @classmethod
+    def setUpClass(cls):
+        cls.d = Daemon("echo", execution=["max_concurrent_sessions: 2"])
+
+    @classmethod
+    def tearDownClass(cls):
+        cls.d.stop()
+
+    def test_two_turn_chats_beyond_slots_and_threads_all_finish(self):
+        from concurrent.futures import ThreadPoolExecutor
+
+        async def main():
+            asyncio.get_running_loop().set_default_executor(ThreadPoolExecutor(4))
+            rb = AsyncRbridge(workspace=self.d.workspace, env=self.d.env)
+
+            async def talk(i):
+                async with rb.chat() as chat:
+                    await chat.send(f"draft {i}")
+                    return (await chat.send(f"check {i}")).text
+
+            out = await asyncio.wait_for(asyncio.gather(*(talk(i) for i in range(40))), 120)
+            await rb.close()
+            return out
+
+        self.assertEqual(asyncio.run(main()), [f"echo: check {i}" for i in range(40)])
+
+
 class SimpleApprovalTest(unittest.TestCase):
     def test_approve(self):
         d = Daemon("permission")
