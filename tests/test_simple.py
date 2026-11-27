@@ -261,6 +261,19 @@ class FilesAndSchemasTest(unittest.TestCase):
             self.assertIsNotNone(r.raw)  # the fake runtime returns no JSON; nothing to parse
             self.assertIsNone(r.parsed)
 
+    def test_schema_and_files_set_once(self):
+        schema = {"type": "object", "properties": {"echo": {"type": "string"}}}
+        rb = Rbridge(env=self.d.env, schema=schema)
+        self.assertEqual(rb._task("x", rb._options({}))["output_schema"], schema)
+        notes = os.path.join(self.d.home, "set-once.md")
+        with open(notes, "w") as f:
+            f.write("hello")
+        with Rbridge(env=self.d.env, files=[notes]) as rb:
+            self.assertIn("Files for this task, in your working folder: set-once.md.", rb.run("read it").text)
+        with self.assertRaises(TypeError):
+            AsyncRbridge(env=self.d.env, schema=schema, nonsense=1)
+        AsyncRbridge(env=self.d.env, schema=schema, files=[notes])
+
     def test_skills_list(self):
         skill = os.path.join(self.d.home, "src2", "tidy")
         os.makedirs(skill)
