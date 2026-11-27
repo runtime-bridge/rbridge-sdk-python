@@ -143,6 +143,35 @@ class SimpleTest(unittest.TestCase):
         self.assertEqual(asyncio.run(main()), ("echo: a", "echo: b", "echo: s", True))
 
 
+class ExitClosesTest(unittest.TestCase):
+    """A program that ends without closing must not leave sessions holding rbridge's slots."""
+
+    @classmethod
+    def setUpClass(cls):
+        cls.d = Daemon("echo")
+
+    @classmethod
+    def tearDownClass(cls):
+        cls.d.stop()
+
+    def test_conversations_close_when_the_program_exits(self):
+        import subprocess
+        import sys
+        child = (
+            "from rbridge import Rbridge\n"
+            f"rb = Rbridge(workspace={self.d.workspace!r}, env={self.d.env!r}, chat=True)\n"
+            "rb.run('one')\n"
+            "other = rb.chat()\n"
+            "other.send('two')\n"
+        )
+        src = os.path.join(os.path.dirname(os.path.dirname(os.path.abspath(__file__))), "src")
+        subprocess.run([sys.executable, "-c", child], check=True, timeout=60,
+                       env=dict(os.environ, PYTHONPATH=src, **self.d.env))
+        with rbridge.connect(env=self.d.env) as c:
+            open_now = [s for s in c.sessions() if s.get("state") not in ("closed", "interrupted")]
+        self.assertEqual(open_now, [])
+
+
 class AsyncCrowdTest(unittest.TestCase):
     """Many conversations at once, more than rbridge has slots and the default
     thread pool has threads: each must still finish."""
