@@ -250,7 +250,8 @@ class Rbridge:
     None lets rbridge choose), model ("latest" for the runtime's newest
     flagship, "auto" for its own recommended choice, or a model name; unset
     uses the runtime's configured default), workspace (default: the current
-    folder), skills, profile ("observe" for read-only, "standard",
+    folder), skills, schema (a JSON schema dict or a Pydantic model for
+    structured answers), profile ("observe" for read-only, "standard",
     "controlled"), approve (what to do when the runtime asks permission:
     False to deny, True to allow, "read" for reads only, or a function),
     sandbox ("files" or "full"), timeout (seconds), max_concurrency for
@@ -267,12 +268,12 @@ class Rbridge:
                  workspace: Optional[str] = None, skills: Sequence[str] = (), profile: Optional[str] = None,
                  approve: Approve = False, sandbox: Optional[str] = None, timeout: Optional[float] = None,
                  max_concurrency: int = 4, max_cost_usd: Optional[float] = None, queue_timeout: Optional[float] = None,
-                 stream: StreamTo = False,
+                 stream: StreamTo = False, schema: Any = None, files: Sequence[Any] = (),
                  chat: bool = False, app: str = "default", client: Optional[Client] = None,
                  env: Optional[Dict[str, str]] = None):
         self.defaults: Dict[str, Any] = dict(runtime=runtime, model=model, workspace=workspace, skills=list(skills),
                                              profile=profile, approve=approve, sandbox=sandbox, timeout=timeout,
-                                             files=[])
+                                             files=list(files), schema=schema)
         self.max_concurrency = max_concurrency
         #: Seconds a run may wait for rbridge to have room; None waits as long as it takes.
         self.queue_timeout = queue_timeout
@@ -299,7 +300,7 @@ class Rbridge:
             return self._client
 
     def _options(self, overrides: Dict[str, Any]) -> Dict[str, Any]:
-        unknown = set(overrides) - set(self.defaults) - {"schema"}
+        unknown = set(overrides) - set(self.defaults)
         if unknown:
             raise TypeError(f"unknown option {', '.join(sorted(unknown))}")
         o = {**self.defaults, **{k: v for k, v in overrides.items() if v is not None}}
@@ -403,10 +404,10 @@ class Rbridge:
             return self._default_chat(options).send(prompt, stream=stream)
         o = self._options({**options, "schema": schema})
         if stream:
-            return _parse(_deliver(self._stream(prompt, o, on_event), stream), schema)
+            return _parse(_deliver(self._stream(prompt, o, on_event), stream), o["schema"])
         t = self._task(prompt, o)
         with self._open(t, o, on_event) as s:
-            return _parse(self._count(Response._from(s.prompt(t["prompt"]))), schema)
+            return _parse(self._count(Response._from(s.prompt(t["prompt"]))), o["schema"])
 
     def stream(self, prompt: Any, *, chat: Optional[bool] = None, schema: Optional[Dict[str, Any]] = None,
                on_event: Optional[Callable[[Dict[str, Any]], None]] = None, **options: Any) -> "Stream":
